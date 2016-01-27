@@ -5,173 +5,67 @@ import json
 import csv
 import logging
 import zipfile
+import multiprocessing
 import concurrent.futures
 import urllib.request as request
-from collections import namedtuple
 
 import openpyxl
+
+from models import Issuer, Plan, Individual, Facility, Address
+from models import *
+from utils import json_objects_from_file
 
 NULL_URL = "NOT SUBMITTED"
 
 
-Issuer = namedtuple('Issuer', ['marketplace_category',
-                               'state',
-                               'issuer_id',
-                               'issuer_name',
-                               'url_submitted',
-                               'provider_urls',
-                               'formulary_urls',
-                               'plan_urls',
-                               'providers',
-                               'tech_poc_email'])
-
-Facility = namedtuple('Facility', ['addresses',
-                                   'facility_name',
-                                   'facility_type',
-                                   'last_updated_on',
-                                   'npi',
-                                   'plans'])
-
-Individual = namedtuple('Individual', ['addresses',
-                                       'accepting',
-                                       'gender',
-                                       'languages',
-                                       'last_updated_on',
-                                       'name',
-                                       'npi',
-                                       'plans',
-                                       'speciality'])
-
-Plan = namedtuple('Plan', ['network_tier',
-                           'plan_id',
-                           'plan_id_type'])
-
-Address = namedtuple('Address', ['address',
-                                 'city',
-                                 'state',
-                                 'zip',
-                                 'phone'])
-
-Name = namedtuple('Name', ['first','middle', 'last'])
-
-logging.basicConfig(filename='healthcare_cms_pull.log', level=logging.INFO)
-
-
-def get_zip_file(url="http://download.cms.gov/marketplace-puf/2016/machine-readable-url-puf.zip"):
+def get_cms_spreadsheet(url="http://download.cms.gov/marketplace-puf/2016/machine-readable-url-puf.zip"):
     logging.info("Pulling CMS Spreadsheet from {}".format(url))
     with request.urlopen(url) as f:
         b = io.BytesIO(f.read())
-    return zipfile.ZipFile(b)
-
-
-def read_cms_data():
-    zf = get_zip_file()
+    zf = zipfile.ZipFile(b)
     fname = zf.namelist()[0]
     nb = openpyxl.load_workbook(zf.open(fname))
-    ws = nb.active
+    logging.info("Sucessfully pulled CMS Spreadsheet".format(url))
+    return nb.active
+
+
+def get_issuers_from_cms_spreadsheet():
+    ws = get_cms_spreadsheet()
     issuers = []
     current_row = 1
-    logging.info("Parsing CMS Spreadsheet")
+    logging.info("BEGIN PARSING CMS SPREADSHEET")
     while ws.cell(row=current_row+1, column=1).value:
         current_row += 1
-        i = Issuer(marketplace_category = ws.cell(row=current_row, column=1).value,
-                   state                = ws.cell(row=current_row, column=2).value,
-                   issuer_id            = ws.cell(row=current_row, column=3).value,
-                   issuer_name          = ws.cell(row=current_row, column=4).value,
-                   url_submitted        = ws.cell(row=current_row, column=5).value,
-                   tech_poc_email       = ws.cell(row=current_row, column=6).value,
-                   provider_urls  =[],
-                   formulary_urls =[],
-                   plan_urls      =[],
-                   providers      =[],
+        i = Issuer(
+            id_issuer            = ws.cell(row=current_row, column=3).value,
+            name                 = ws.cell(row=current_row, column=4).value,
+            marketplace_category = ws.cell(row=current_row, column=1).value,
+            url_submitted        = ws.cell(row=current_row, column=5).value,
+            state                = ws.cell(row=current_row, column=2).value,
                    )
         if i.url_submitted == NULL_URL:
-            logging.error("Missing json url for Issuer: {}, {}".format(i.issuer_name, i.issuer_id))
+            logging.warning("Missing json url for Issuer: {}, {}".format(i.name, i.id_issuer))
             continue
-        logging.info("Issuer Parsed: {}".format(i.issuer_name))
+        logging.info("Issuer Parsed: {}".format(i.name))
         issuers.append(i)
+    logging.info("FINISH PARSING CMS SPREADSHEET")
     return issuers
 
 
-def pull_issuer_urls(issuer):
-    logging.info("pulling urls for issuer {}".format(issuer.issuer_name))
+def pull_issuer_index(issuer):
+    logging.info("PULLING JSON INDEX FOR ISSUER {} @ {}".format(issuer.name,
+                                                                issuer.url_submitted))
+    plan_urls = []
+    provider_urls = []
     try:
         with request.urlopen(issuer.url_submitted, timeout=20) as conn:
-            try:
-                js = json.loads(conn.read().decode('utf8'))
-            except Exception:
-                logging.warning("Error parsing redirect data from {}, {}".format(issuer.name, e))
-            else:
-                issuer.provider_urls.extend(js['provider_urls'])
-                issuer.formulary_urls.extend(js['formulary_urls'])
-                issuer.plan_urls.extend(js['plan_urls'])
+            js = json.loads(conn.read().decode('utf8'))
+            plan_urls = js['plan_urls']
+            provider_urls = js['provider_urls']
+            logging.info("FINISHED PULLING JSON INDEX FOR {}".format(issuer.name))
     except Exception as e:
-        logging.warning("Error loading redirect data from {}, {}".format(issuer.name, e))
-    logging.info("finished pulling issuer urls for {}".format(issuer.issuer_name))
-
-
-def parse_addresses(addresses_raw):
-    addresses = []
-    for address_raw in addresses_raw:
-        address = Address(address=address_raw['address'],
-                          city=address_raw['city'],
-                          state=address_raw['state'],
-                          zip=address_raw['zip'],
-                          phone=address_raw['phone'])
-        addresses.append(address)
-    return addresses
-
-
-def parse_plans(plans_raw):
-    plans = []
-    for plan_raw in plans_raw:
-        plan = Plan(network_tier=plan_raw['network_tier'],
-                    plan_id     =plan_raw['plan_id'],
-                    plan_id_type=plan_raw['plan_id_type'])
-        plans.append(plan)
-    return plans
-
-
-def parse_name(name_raw):
-    first = name_raw.get('first','')
-    middle = name_raw.get('middle','')
-    last = name_raw.get('last','')
-    return ' '.join([first,middle,last])
-
-
-def parse_individual_provider(provider_raw):
-    individual = Individual(accepting      =provider_raw.get('accepting', []),
-                            gender         =provider_raw.get('gender'),
-                            languages      =provider_raw.get('languages', []),
-                            last_updated_on=provider_raw.get('last_updated_on'),
-                            npi            =provider_raw.get('npi'),
-                            speciality     =provider_raw.get('speciality'),
-                            name           =parse_name(provider_raw.get('name',{})),
-                            addresses      =parse_addresses(provider_raw.get('addresses',[])),
-                            plans          =parse_plans(provider_raw.get('plans',[])))
-    return individual
-
-
-def parse_facility_provider(provider_raw):
-    facility = Facility(facility_name  =provider_raw['facility_name'],
-                        facility_type  =provider_raw['facility_type'],
-                        last_updated_on=provider_raw['last_updated_on'],
-                        npi            =provider_raw['npi'],
-                        addresses      =parse_addresses(provider_raw['addresses']),
-                        plans          =parse_plans(provider_raw['plans']))
-    return facility
-
-def parse_providers(providers_raw):
-    providers = []
-    for provider_raw in providers_raw:
-        provider_type = provider_raw['type']
-        if provider_type=='INDIVIDUAL':
-            providers.append(parse_individual_provider(provider_raw))
-        elif provider_type=='FACILITY':
-            providers.append(parse_facility_provider(provider_raw))
-        else:
-            logging.error("unknown provider type {}".format(provider_type))
-    return providers
+        logging.error("ERROR LOADING JSON INDEX FOR {}, {}".format(issuer.name, e))
+    return (issuer, plan_urls, provider_urls)
 
 
 def pull_providers_page(issuer, providers_url):
@@ -185,60 +79,102 @@ def pull_providers_page(issuer, providers_url):
     except Exception as e:
         logging.warning("Error loading provider data from {}, {}".format(issuer.issuer_name, e))
 
+IDX_PLAN = 1
+def build_plan_from_raw(issuer, plan_raw):
+    global IDX_PLAN
+    p = Plan(idx_plan=IDX_PLAN,
+             id_plan=plan_raw['plan_id'],
+             id_issuer=issuer.id_issuer,
+             plan_id_type=plan_raw['plan_id_type'],
+             marketing_name=plan_raw['marketing_name'],
+             summary_url=plan_raw['summary_url'])
+    IDX_PLAN+=1
+    return p
 
-def pull_issuer(issuer):
-    logging.info("pulling issuer data for {}".format(issuer.issuer_name))
-    pull_issuer_urls(issuer)
-    logging.info("pulled issuer urls {}".format(issuer.provider_urls))
-    dir = "json/{}".format(issuer.issuer_id)
-    if not os.path.isdir(dir):
-        os.mkdir(dir)
+def build_provider_from_raw(issuer, plans, provider_raw):
+    p = Individual(npi = provider_raw['npi'],
+                   name_first="Gerald",
+                   name_last="Ford",
+                   last_updated_on=0,
+                   accepting="No, stop asking!")
+    if provider_raw['type'] == 'FACILITY':
+        pass
+    else:
+        pass
+    return (p, [])
+
+def pull_plan_fulldata(conn, issuer, plan_url):
+    logging.info("Pulling plan page at {}".format(plan_url))
+    plans = {}
+    try:
+        req = request.urlopen(plan_url)
+        json_objs = json_objects_from_file(req)
+        for plan_raw in json_objs:
+            plan = build_plan_from_raw(issuer, plan_raw)
+            insert_plan(conn, plan)
+            plans[(plan.id_plan,plan.id_issuer)] = plan
+    except Exception as e:
+        logging.warning("Error loading plan plan data from {}, {}".format(issuer.name, e))
+    return plans
+
+def pull_provider_fulldata(conn, issuer, plans, provider_url):
+    logging.info("Pulling provider page at {}".format(provider_url))
+    try:
+        req = request.urlopen(provider_url)
+        logging.info("Downloading provider json\n\tFile Size: {}Bytes".format(req.info().get('Content-Length')))
+        json_objs = json_objects_from_file(req)
+        for provider_raw in json_objs:
+            logging.info("Parsed Provider with npi {}".format(provider_raw['npi']))
+            provider, provider_plans = build_provider_from_raw(issuer, plans, provider_raw)
+            insert_provider(conn, provider)
+            for provider_plan in provider_plans:
+                insert_provider_plan(provider_plan)
+    except Exception as e:
+        logging.warning("Error loading plan plan data from {}, {}".format(issuer.name, e))
+
+def pull_issuer_fulldata(id_issuer):
+    logging.basicConfig(filename="{}.log".format(id_issuer), level=logging.INFO)
+    logging.info("PULLING FULLDATA FOR ISSUER {}".format(id_issuer))
+    conn = open_db(id_issuer)
+    issuer = query_issuer(conn)
+    plan_urls = query_plan_urls(conn, issuer)
+    provider_urls = query_provider_urls(conn, issuer)
+    plans = {}
+    for plan_url in plan_urls:
+        plans.update(pull_plan_fulldata(conn, issuer, plan_url))
+    logging.info("PULLED {} PLANS FOR ISSUER {}".format(len(plans),id_issuer))
+    for provider_url in provider_urls:
+        pull_provider_fulldata(conn, issuer, plans, provider_url)
+    close_db(conn)
+
+
+def pull_issuers_fulldata():
+    db_filenames = [os.path.splitext(fname) for fname in os.listdir("db")]
+    ids_issuer = [base for (base,ext) in db_filenames if ext == ".sqlite3"]
+    pull_issuer_fulldata(ids_issuer[0])
+    # with multiprocessing.Pool(5) as p:
+    #     p.map(pull_issuer_fulldata, ids_issuer)
+
+
+def pull_issuers_metadata():
+    issuers = get_issuers_from_cms_spreadsheet()[:10]
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(pull_providers_page, issuer, url) for url in issuer.provider_urls]
-        concurrent.futures.wait(futures)
-    return issuer
-
-
-def pull_all():
-    if not os.path.isdir("json"):
-        os.mkdir("json")
-
-    issuers = read_cms_data()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
-        futures = [executor.submit(pull_issuer, i) for i in issuers]
-        concurrent.futures.wait(futures)
-
-
-CSV_FIELDS = [
-              'ISSUER_NAME',
-              'PROVIDER_NAME',
-              'PROVIDER_TYPE',
-              'PLAN_ID'
-             ]
-def save_to_csv(issuer):
-    out_file = open(out_filename,'w')
-    csv_writer = csv.DictWriter(out_file, CSV_FIELDS)
-    csv_writer.writeheader()
-    logging.info("Writing issuer \"{}\" data to csv".format(issuer.issuer_name))
-    for provider in issuer.providers:
-        for plan in provider.plans:
-            if type(provider) == Facility:
-                name = provider.facility_name
-                type_ = "Facility"
-            else:
-                name = provider.name
-                type_ = "Individual"
-            all_fields = {'ISSUER_NAME':issuer.issuer_name,
-                          'PROVIDER_NAME': name,
-                          'PROVIDER_TYPE': type_,
-                          'PLAN_ID': plan.plan_id,
-                          }
-            csv_writer.writerow(all_fields)
-    out_file.close()
+        futures = [executor.submit(pull_issuer_index, issuer) for issuer in issuers]
+        for future in concurrent.futures.as_completed(futures):
+            issuer, plan_urls, provider_urls = future.result()
+            conn = init_db(issuer.id_issuer)
+            insert_issuer(conn, issuer)
+            for plan_url in plan_urls:
+                insert_plan_url(conn, issuer, plan_url)
+            for provider_url in provider_urls:
+                insert_provider_url(conn, issuer, provider_url)
+            close_db(conn)
 
 
 def main():
-    pull_all()
+    pull_issuers_metadata()
+    pull_issuers_fulldata()
 
 if __name__ == "__main__":
     main()
