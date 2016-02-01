@@ -125,7 +125,7 @@ class Specialty():
         self.idx_specialty = idx_specialty
         self.specialty = specialty
 
-def build_provider_from_dict(issuer, plans, prov_dict):
+def build_provider_from_dict(issuer, plans, prov_dict, config):
     prov = Provider()
     prov.type = ProviderType.individual
     prov.npi = prov_dict.get('npi',None)
@@ -140,7 +140,7 @@ def build_provider_from_dict(issuer, plans, prov_dict):
         plan = plans[plan_dict['plan_id']]
         prov.plans.append(plan)
     for addr_dict in prov_dict.get('addresses', []):
-        add_address(prov, addr_dict)
+        add_address(prov, addr_dict, config)
 
     type_ = prov_dict.get('type','').lower()
     if type_ == 'individual':
