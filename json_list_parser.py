@@ -13,13 +13,15 @@ def json_list_parser(input_file,
     Read an input file, and yield up each JSON object parsed from the file.
     Allocates minimal memory so should be suitable for large input files.
     """
+    bytes_read = 0
     def read(num_chars):
+        nonlocal bytes_read
         s = input_file.read(num_chars)
+        bytes_read += len(s)
         if type(s) == bytes:
             s = s.decode('utf8')
         return s
 
-    X = None
     #Seek to the opening bracket of the data list
     while True:
         c = read(1)
@@ -39,13 +41,7 @@ def json_list_parser(input_file,
         while True:
             try:
                 # Try to decode a JSON object.
-                # print("DECODING WITH BUFFER")
-                # print("*"*80)
-                # print(buf)
-                # print("*"*80)
-                # input()
                 x, i = _DECODER.raw_decode(buf)
-                # print("JSON:\n{}".format(buf[:i]))
                 # If we got back a dict, we got a whole JSON object.  Yield it.
                 if type(x) == dict:
                     # First, chop out the JSON from the buffer.
@@ -54,15 +50,11 @@ def json_list_parser(input_file,
                     if len(buf) < chunk_size:
                         temp = read(chunk_size)
                         buf = (buf + temp).lstrip()
-                    # print("NEXT BUFFER:\n{}\n".format(buf[:100]))
                     # Look for a following comma, indicating there is another
                     # entry in the list.
                     i = buf.find(',')
-                    # print("i:\n{}".format(i))
-                    X = x
-                    yield x
+                    yield bytes_read,x
                     if i == -1:
-                        # print(buf)
                         raise StopIteration()
                     buf = buf[i+1:].lstrip()
 
