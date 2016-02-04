@@ -1,3 +1,4 @@
+from io import TextIOWrapper
 import json
 
 _DECODER = json.JSONDecoder()
@@ -6,6 +7,18 @@ _DEFAULT_CHUNK_SIZE = 4096
 _MB = (1024 * 1024)
 _LARGEST_JSON_OBJECT_ACCEPTED = 16 * _MB  # default to 16 megabytes
 
+def get_file_size(input_file):
+    if type(input_file) == TextIOWrapper:
+        file_size = os.stat(input_file.name).st_size
+    else:
+        file_size = input_file.info().get('Content-Length')
+        try:
+            file_size = int(file_size)
+        except ValueError:
+            file_size = -1
+    return file_size
+
+
 def json_list_parser(input_file,
                      chunk_size=_DEFAULT_CHUNK_SIZE,
                      max_size=_LARGEST_JSON_OBJECT_ACCEPTED):
@@ -13,6 +26,8 @@ def json_list_parser(input_file,
     Read an input file, and yield up each JSON object parsed from the file.
     Allocates minimal memory so should be suitable for large input files.
     """
+    file_size = get_file_size(input_file)
+
     bytes_read = 0
     def read(num_chars):
         nonlocal bytes_read
@@ -30,6 +45,9 @@ def json_list_parser(input_file,
     buf = ''
     while True:
         temp = read(chunk_size)
+        # print(bytes_read)
+        # if (not temp) and (bytes_read >= file_size):
+        #     break
         if not temp:
             break
 
@@ -41,7 +59,13 @@ def json_list_parser(input_file,
         while True:
             try:
                 # Try to decode a JSON object.
+                # print("DECODING WITH BUFFER")
+                # print("*"*80)
+                # print(buf)
+                # print("*"*80)
+                # input()
                 x, i = _DECODER.raw_decode(buf)
+                # print("JSON:\n{}".format(buf[:i]))
                 # If we got back a dict, we got a whole JSON object.  Yield it.
                 if type(x) == dict:
                     # First, chop out the JSON from the buffer.
@@ -50,11 +74,14 @@ def json_list_parser(input_file,
                     if len(buf) < chunk_size:
                         temp = read(chunk_size)
                         buf = (buf + temp).lstrip()
+                    # print("NEXT BUFFER:\n{}\n".format(buf[:100]))
                     # Look for a following comma, indicating there is another
                     # entry in the list.
                     i = buf.find(',')
-                    yield bytes_read,x
+                    # print("i:\n{}".format(i))
+                    yield (bytes_read,file_size),x
                     if i == -1:
+                        # print(buf)
                         raise StopIteration()
                     buf = buf[i+1:].lstrip()
 
@@ -74,4 +101,31 @@ def json_list_parser(input_file,
         if len(buf) > 70:
             buf = buf[:70] + '...'
         raise ValueError('leftover stuff from input: "{}"\nLast object:\n{}'.format(buf,X))
+
+if __name__=="__main__":
+    import os
+    import sys
+    import re
+    import urllib.request as request
+    url_regex = re.compile(
+                r'^(?:http|ftp)s?://' # http:// or https://
+                r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|' #domain...
+                r'localhost|' #localhost...
+                r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})' # ...or ip
+                r'(?::\d+)?' # optional port
+                r'(?:/?|[/?]\S+)$', re.IGNORECASE)
+    if url_regex.fullmatch(sys.argv[1]) is not None:
+        f = request.urlopen(sys.argv[1], timeout=20)
+        get_file_size(f)
+        print("Downloading plan json\n\tFile Size: {}Bytes".format(file_size))
+    else:
+        f = open(sys.argv[1],'r')
+        get_file_size(f)
+        print("Opening plan json\n\tFile Size: {}Bytes".format(file_size))
+    parser = json_list_parser(f, file_size)
+
+    for (bytes_read,file_size),obj in parser:
+        print("\nREAD ({}/{}) BYTES".format(bytes_read,file_size))
+        print(obj)
+        input()
 

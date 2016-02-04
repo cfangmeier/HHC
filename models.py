@@ -75,6 +75,18 @@ def build_plan_from_dict(issuer, plan_dict):
         raise ValueError("Missing field \"{}\" in plan json with parsed dict \n{}\n".format(e,plan_dict))
     return p
 
+def build_fake_plan_from_dict(issuer, plan_dict):
+    try:
+        p = Plan()
+        p.id_plan        = plan_dict['plan_id']
+        p.issuer         = issuer
+        p.plan_id_type   = plan_dict['plan_id_type']
+        p.marketing_name = "N/A"
+        p.summary_url    = "N/A"
+    except KeyError as e:
+        raise ValueError("Missing field \"{}\" in plan json with parsed dict \n{}\n".format(e,plan_dict))
+    return p
+
 class Address():
     def __init__(self):
         self.provider = None
@@ -84,12 +96,11 @@ class Address():
         self.zip = None
         self.phone = None
 
-def add_address(provider, addr_dict):
-    from healthcare_cms_pull import CONFIG
+def add_address(provider, addr_dict, config):
     addr = Address()
     addr.provider=provider
     addr.zip=addr_dict.get('zip',None)
-    if CONFIG['FULL_ADDRESS']:
+    if config['FULL_ADDRESS']:
         addr.address=addr_dict.get('address',None)
         addr.city=addr_dict.get('city',None)
         addr.state=addr_dict.get('state',None)
@@ -136,8 +147,15 @@ def build_provider_from_dict(issuer, plans, prov_dict, config):
     prov.specialties = [Specialty(specialty) for specialty in unique(prov_dict.get('specialty', [])+
                                                                      prov_dict.get('speciality',[]))]
     prov.facility_types=[FacilityType(facility_type) for facility_type in unique(prov_dict.get('facility_type',[]))]
+
+    fake_plans = {}
     for plan_dict in prov_dict.get('plans', []):
-        plan = plans[plan_dict['plan_id']]
+        id_plan = plan_dict['plan_id']
+        if id_plan not in plans:
+            plan = build_fake_plan_from_dict(issuer,plan_dict)
+            fake_plans[id_plan] = plan
+        else:
+            plan = plans[id_plan]
         prov.plans.append(plan)
     for addr_dict in prov_dict.get('addresses', []):
         add_address(prov, addr_dict, config)
@@ -149,5 +167,5 @@ def build_provider_from_dict(issuer, plans, prov_dict, config):
     if type_ == 'facility':
         prov.type = ProviderType.facility
         prov.name = prov_dict.get('facility_name',"N/A")
-    return prov
+    return prov, fake_plans
 

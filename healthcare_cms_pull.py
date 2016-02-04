@@ -77,41 +77,50 @@ def pull_plan_fulldata(conn, issuer, plan_url):
     LOGGER.info("Pulling plan page at {}".format(plan_url))
     plans = {}
     try:
-        req = request.urlopen(plan_url)
-        json_objs = json_list_parser(req)
-        for _,plan_dict in json_objs:
-            try:
-                plan = models.build_plan_from_dict(issuer, plan_dict)
-                plans[plan.id_plan] = plan
-            except Exception as e:
-                LOGGER.exception(e)
-                LOGGER.info(plan_dict)
-        db.insert_plans(conn, plans.values())
-        conn.commit()
-    except Exception as e:
-        LOGGER.warning("Error loading plan plan data from {}, {}".format(issuer.name, e))
-    return plans
-
-
-def pull_provider_fulldata(conn, issuer, plans, provider_url, config):
-    LOGGER.info("Pulling provider page at {}".format(provider_url))
-    try:
-        req = request.urlopen(provider_url)
+        req = request.urlopen(plan_url, timeout=20)
         file_size = req.info().get('Content-Length')
         try:
             file_size = int(file_size)
         except ValueError:
             file_size = 0
-        LOGGER.info("Downloading provider json\n\tFile Size: {}Bytes".format(file_size))
+        LOGGER.info("Downloading plan json\n\tFile Size: {}Bytes".format(file_size))
+        json_objs = json_list_parser(req, file_size)
+        for i,((bytes_read,file_size),plan_dict) in enumerate(json_objs):
+            try:
+                plan = models.build_plan_from_dict(issuer, plan_dict)
+                if plan.id_plan in plans:
+                    LOGGER.warning("duplicate plan id: {}".format(plan.id_plan))
+                plans[plan.id_plan] = plan
+            except Exception as e:
+                LOGGER.exception(e)
+                LOGGER.info(plan_dict)
+                continue
+        LOGGER.info("Parsed {} Plans".format(len(plans)))
+        db.insert_plans(conn, plans.values())
+        conn.commit()
+    except Exception as e:
+        LOGGER.exception(e)
+        LOGGER.warning("Error loading plan data from {}".format(issuer.name))
+    return plans
+
+
+def pull_provider_fulldata(conn, issuer, plans, provider_url, config):
+    try:
+        req = request.urlopen(provider_url)
         json_objs = json_list_parser(req)
         providers = []
-        for i,(bytes_read,provider_dict) in enumerate(json_objs):
+        for i,((bytes_read,file_size),provider_dict) in enumerate(json_objs):
             try:
-                provider = models.build_provider_from_dict(issuer, plans, provider_dict, config)
+                provider, fake_plans = models.build_provider_from_dict(issuer, plans, provider_dict, config)
+                if fake_plans:
+                    LOGGER.warning("Found provider {} with undocumented plans: {}".format(provider.name,fake_plans.keys()))
+                db.insert_plans(conn, fake_plans.values())
+                plans.update(fake_plans)
                 providers.append(provider)
             except Exception as e:
                 LOGGER.exception(e)
                 LOGGER.info(str(provider_dict))
+                continue
             if((i%1000) == 0):
                 if file_size > 0:
                     progress = int(100*(bytes_read/file_size))
@@ -136,21 +145,27 @@ def init_full_pull_logger(id_issuer):
     LOGGER.addHandler(logging.FileHandler(log_name))
 
 
-def pull_issuer_fulldata(id_issuer, config):
+def pull_issuer_fulldata(args):
+    id_issuer, config = args
     init_full_pull_logger(id_issuer)
     LOGGER.info("PULLING FULLDATA FOR ISSUER {}".format(id_issuer))
     conn = db.open_db(id_issuer)
     issuer = db.query_issuer(conn, id_issuer)
     plan_urls, provider_urls = db.query_issuer_urls(conn, issuer)
     plans = {}
+    LOGGER.info("BEGIN PULLING PLAN DATA")
     for plan_url in plan_urls:
         plans.update(pull_plan_fulldata(conn, issuer, plan_url))
     LOGGER.info("PULLED {} PLANS FOR ISSUER {}".format(len(plans),id_issuer))
+
     LOGGER.info("BEGIN PULLING PROVIDER DATA")
-    for provider_url in provider_urls:
+    n = len(provider_urls)
+    for i, provider_url in enumerate(provider_urls):
+        LOGGER.info("Pulling provider page {} of {} at {}".format(i+1, n, provider_url))
         pull_provider_fulldata(conn, issuer, plans, provider_url, config)
     db.close_db(conn)
     LOGGER.info("FINISHED PULLING PROVIDER DATA")
+
     LOGGER.info("FINISHED PULLING FULLDATA FOR ISSUER: {}, {}".format(id_issuer, issuer.name))
 
 
@@ -158,7 +173,8 @@ def pull_issuers_fulldata(requested_ids, processes, config):
     db_filenames = [os.path.splitext(fname) for fname in os.listdir("db")]
     ids_issuer = [int(base) for (base,ext) in db_filenames if ext == ".sqlite3"]
     if requested_ids is not None:
-        args = [(id_issuer,config) for id_issuer in ids_issuer if id_issuer in requested_ids]
+        ids_issuer = [id_issuer for id_issuer in ids_issuer if id_issuer in requested_ids]
+    args = [(id_issuer,config) for id_issuer in ids_issuer]
     with multiprocessing.Pool(processes) as p:
         p.map(pull_issuer_fulldata, args)
 
