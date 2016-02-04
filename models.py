@@ -4,7 +4,7 @@ from datetime import date
 
 def unique(xs):
     if type(xs) is not list: return []
-    else: return list(set([x.lower() for x in xs]))
+    else: return list(set([x.lower() for x in xs if x is not None]))
 
 class Accepting(IntEnum):
     not_accepting = 0

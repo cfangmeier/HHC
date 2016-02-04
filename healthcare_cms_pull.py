@@ -45,7 +45,7 @@ def get_issuers_from_cms_spreadsheet(cms_url):
         i.name                 = ws.cell(row=current_row, column=4).value
         i.marketplace_category = ws.cell(row=current_row, column=1).value
         i.url_submitted        = ws.cell(row=current_row, column=5).value
-        i.state                = ws.cell(row=current_row, column=2).value
+        i.state                = ws.cell(row=current_row, column=2).value.lower()
         i.plans = []
         if i.url_submitted == NULL_URL:
             LOGGER.warning("Missing json url for Issuer: {}, {}".format(i.name, i.id_issuer))
@@ -95,7 +95,6 @@ def pull_plan_fulldata(conn, issuer, plan_url):
                 LOGGER.exception(e)
                 LOGGER.info(plan_dict)
                 continue
-        LOGGER.info("Parsed {} Plans".format(len(plans)))
         db.insert_plans(conn, plans.values())
         conn.commit()
     except Exception as e:
@@ -146,11 +145,14 @@ def init_full_pull_logger(id_issuer):
 
 
 def pull_issuer_fulldata(args):
-    id_issuer, config = args
+    id_issuer, requested_states, config = args
     init_full_pull_logger(id_issuer)
-    LOGGER.info("PULLING FULLDATA FOR ISSUER {}".format(id_issuer))
     conn = db.open_db(id_issuer)
     issuer = db.query_issuer(conn, id_issuer)
+    if issuer.state not in requested_states:
+        db.close_db(conn)
+        return
+    LOGGER.info("PULLING FULLDATA FOR ISSUER {}".format(id_issuer))
     plan_urls, provider_urls = db.query_issuer_urls(conn, issuer)
     plans = {}
     LOGGER.info("BEGIN PULLING PLAN DATA")
@@ -169,20 +171,22 @@ def pull_issuer_fulldata(args):
     LOGGER.info("FINISHED PULLING FULLDATA FOR ISSUER: {}, {}".format(id_issuer, issuer.name))
 
 
-def pull_issuers_fulldata(requested_ids, processes, config):
+def pull_issuers_fulldata(requested_ids, requested_states, processes, config):
     db_filenames = [os.path.splitext(fname) for fname in os.listdir("db")]
     ids_issuer = [int(base) for (base,ext) in db_filenames if ext == ".sqlite3"]
     if requested_ids is not None:
         ids_issuer = [id_issuer for id_issuer in ids_issuer if id_issuer in requested_ids]
-    args = [(id_issuer,config) for id_issuer in ids_issuer]
+    args = [(id_issuer, requested_states, config) for id_issuer in ids_issuer]
     with multiprocessing.Pool(processes) as p:
         p.map(pull_issuer_fulldata, args)
 
 
-def pull_issuers_metadata(cms_url, requested_ids, config):
+def pull_issuers_metadata(cms_url, requested_ids, requested_states, config):
     issuers = get_issuers_from_cms_spreadsheet(cms_url)
     if requested_ids is not None:
         issuers = [issuer for issuer in issuers if issuer.id_issuer in requested_ids]
+    if requested_states is not None:
+        issuers = [issuer for issuer in issuers if issuer.state.lower() in requested_states]
     if not os.path.isdir("db"):
         os.mkdir("db")
 
@@ -204,7 +208,9 @@ def main():
     add('--fulladdress', action='store_true',
             help = "Enable to store full address data, leave out to conserve disk space")
     add('--issuer_ids', default = None, nargs='+', type=int,
-            help="specify specific issuers to do fulldata pull on")
+            help="Specify specific issuers to do fulldata pull on")
+    add('--states', default = None, nargs='+', type=str,
+            help="Specify a list of specific states to download fulldata on")
     add('--processes', default = 1, type=int,
             help="Set the number of processes to use in the full data pull")
     add('action', choices=['init','download', 'all'],
@@ -214,9 +220,9 @@ def main():
     config = {}
     config['FULL_ADDRESS'] = args.fulladdress
     if args.action in ('init', 'all'):
-        pull_issuers_metadata(args.cmsurl, args.issuer_ids, config)
+        pull_issuers_metadata(args.cmsurl, args.issuer_ids, args.states, config)
     if args.action in ('download', 'all'):
-        pull_issuers_fulldata(args.issuer_ids, args.processes, config)
+        pull_issuers_fulldata(args.issuer_ids, args.states, args.processes, config)
 
 
 if __name__ == "__main__":
