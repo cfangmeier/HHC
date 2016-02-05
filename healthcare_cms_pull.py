@@ -149,7 +149,7 @@ def pull_issuer_fulldata(args):
     init_full_pull_logger(id_issuer)
     conn = db.open_db(id_issuer)
     issuer = db.query_issuer(conn, id_issuer)
-    if issuer.state not in requested_states:
+    if requested_states is not None and issuer.state not in requested_states:
         db.close_db(conn)
         return
     LOGGER.info("PULLING FULLDATA FOR ISSUER {}".format(id_issuer))
