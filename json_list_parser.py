@@ -1,4 +1,5 @@
 from io import TextIOWrapper
+from datetime import datetime
 import json
 
 _DECODER = json.JSONDecoder()
@@ -17,6 +18,33 @@ def get_file_size(input_file):
         except ValueError:
             file_size = -1
     return file_size
+
+last_time = datetime.now()
+last_bytes = 0
+
+def format_progress(downloaded, total):
+    global last_time, last_bytes
+    from math import log2, floor
+    suffixes = ['', 'kB', 'MB', 'GB', 'TB']
+
+    now = datetime.now()
+    dl_speed = 10**6*(downloaded-last_bytes)/(now-last_time).microseconds
+    last_bytes = downloaded
+    last_time = now
+
+    suf_idx = floor(log2(total)/10)
+    suffix = suffixes[suf_idx]
+    downloaded /= 2**(suf_idx*10)
+    total /= 2**(suf_idx*10)
+
+    suf_idx = floor(log2(dl_speed)/10)
+    dl_suffix = suffixes[suf_idx]+'/s'
+    dl_speed /= 2**(suf_idx*10)
+
+    progress = downloaded/total * 100 if total > 0 else -1
+    s = "({:.2f}{}/{:.2f}{}),({:.2f}{}) {:.2f}%".format(downloaded, suffix, total, suffix,
+                                                        dl_speed, dl_suffix, progress)
+    return s
 
 
 def json_list_parser(input_file,

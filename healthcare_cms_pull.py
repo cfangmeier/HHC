@@ -11,13 +11,13 @@ import urllib.request as request
 
 import openpyxl
 
-from json_list_parser import json_list_parser
+from json_list_parser import json_list_parser, format_progress
 import models
 import db
 
 NULL_URL = "NOT SUBMITTED"
 LOGGER = logging.getLogger('HHC')
-LOGGER.addHandler(logging.FileHandler("healthcare_cms_pull.log"))
+LOGGER.addHandler(logging.FileHandler("healthcare_cms_pull.log", mode='w'))
 
 CONFIG = {}
 
@@ -121,11 +121,8 @@ def pull_provider_fulldata(conn, issuer, plans, provider_url, config):
                 LOGGER.info(str(provider_dict))
                 continue
             if((i%1000) == 0):
-                if file_size > 0:
-                    progress = int(100*(bytes_read/file_size))
-                    LOGGER.info("Downloaded ({}/{}) {:02d}%".format(bytes_read,file_size,progress))
-                else:
-                    LOGGER.info("Downloaded ({}/{})".format(bytes_read,file_size))
+                s = format_progress(bytes_read, file_size)
+                LOGGER.info("Downloaded {}".format(s))
                 LOGGER.info("Parsed {} Providers".format(i))
                 db.insert_providers(conn, providers)
                 conn.commit()
@@ -141,7 +138,7 @@ def init_full_pull_logger(id_issuer):
     global LOGGER
     LOGGER = logging.Logger("FULLPULL:"+str(id_issuer))
     log_name = os.path.join("db","{}.log".format(id_issuer))
-    LOGGER.addHandler(logging.FileHandler(log_name))
+    LOGGER.addHandler(logging.FileHandler(log_name, mode='w'))
 
 
 def pull_issuer_fulldata(args):
