@@ -16,8 +16,10 @@ import models
 import db
 
 NULL_URL = "NOT SUBMITTED"
-LOGGER = logging.getLogger('HHC')
-LOGGER.addHandler(logging.FileHandler("healthcare_cms_pull.log", mode='w'))
+LOGGER = logging.getLogger('main')
+ch = logging.FileHandler("main.log", mode='w')
+ch.setFormatter(logging.Formatter(fmt="%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
+LOGGER.addHandler(ch)
 
 CONFIG = {}
 
@@ -138,7 +140,9 @@ def init_full_pull_logger(id_issuer):
     global LOGGER
     LOGGER = logging.Logger("FULLPULL:"+str(id_issuer))
     log_name = os.path.join("db","{}.log".format(id_issuer))
-    LOGGER.addHandler(logging.FileHandler(log_name, mode='w'))
+    ch = logging.FileHandler(log_name, mode='w')
+    ch.setFormatter(logging.Formatter(fmt="%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
+    LOGGER.addHandler(ch)
 
 
 def pull_issuer_fulldata(args):
