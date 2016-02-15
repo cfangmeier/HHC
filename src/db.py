@@ -5,19 +5,16 @@ LOGGER = logging.getLogger('HHC')
 
 import models
 
-def get_type_str(provider):
-    if type(provider) == models.Individual:
-        return "INDIVIDUAL"
-    else:
-        return "FACILITY"
+def get_last_idx(conn):
+    return conn.execute("SELECT last_insert_rowid();").fetchone()[0]
 
-def get_db_fname(id_issuer):
-    fname = "{}.sqlite3".format(id_issuer)
+def get_db_fname(db_name):
+    fname = "{}.sqlite3".format(db_name)
     fname = os.path.join("db", fname)
     return fname
 
-def init_db(id_issuer):
-    fname = get_db_fname(id_issuer)
+def create_index_db():
+    fname = get_db_fname('index')
     if not os.path.exists("db"):
         os.mkdir("db")
     if os.path.exists(fname):
@@ -26,19 +23,140 @@ def init_db(id_issuer):
 
     conn = sqlite3.connect(fname)
     conn.executescript('''
-    CREATE TABLE Issuer (id_issuer            INTEGER PRIMARY KEY,
-                         name                 TEXT    NOT NULL,
-                         marketplace_category TEXT    NOT NULL,
-                         url_submitted        TEXT    NOT NULL,
-                         state                TEXT    NOT NULL);
+    CREATE TABLE IssuerGroup (idx_issuer_group INTEGER PRIMARY KEY AUTOINCREMENT,
+                              url_submitted    TEXT    NOT NULL,
+                              url_status       TEXT);
+
+    CREATE TABLE Issuer (id_issuer             INTEGER PRIMARY KEY,
+                         idx_issuer_group      INTEGER NOT NULL,
+                         name                  TEXT    NOT NULL,
+                         marketplace_category  TEXT    NOT NULL,
+                         state                 TEXT    NOT NULL,
+                         FOREIGN KEY(idx_issuer_group) REFERENCES IssuerGroup(idx_issuer_group));
 
     CREATE TABLE ProviderURL (url              TEXT    NOT NULL,
-                              id_issuer           INTEGER NOT NULL,
-                              FOREIGN KEY(id_issuer) REFERENCES Issuer(id_issuer));
+                              idx_issuer_group INTEGER NOT NULL,
+                              FOREIGN KEY(idx_issuer_group) REFERENCES IssuerGroup(id_issuer_group));
 
-    CREATE TABLE PlanURL (url          TEXT    NOT NULL,
-                          id_issuer    INTEGER NOT NULL,
-                          FOREIGN KEY(id_issuer) REFERENCES Issuer(id_issuer));
+    CREATE TABLE PlanURL (url              TEXT    NOT NULL,
+                          idx_issuer_group INTEGER NOT NULL,
+                          FOREIGN KEY(idx_issuer_group) REFERENCES IssuerGroup(id_issuer_group));
+
+    CREATE TABLE FormularyURL (url              TEXT    NOT NULL,
+                               idx_issuer_group INTEGER NOT NULL,
+                               FOREIGN KEY(idx_issuer_group) REFERENCES IssuerGroup(id_issuer_group));
+    ''')
+    return conn
+
+def open_index_db():
+    fname = get_db_fname('index')
+    return sqlite3.connect(fname)
+
+def insert_issuer_groups(conn, issuer_groups):
+    for issuer_group in issuer_groups:
+        conn.execute("INSERT INTO IssuerGroup (url_submitted) VALUES (?)",
+                     (issuer_group.url_submitted,))
+        issuer_group.idx_issuer_group = get_last_idx(conn)
+        for issuer in issuer_group.issuers:
+            conn.execute("""INSERT INTO Issuer
+                            (id_issuer, idx_issuer_group, name, marketplace_category, state)
+                            VALUES (?,?,?,?,?)""", (issuer.id_issuer,
+                                                    issuer_group.idx_issuer_group,
+                                                    issuer.name,
+                                                    issuer.marketplace_category,
+                                                    issuer.state))
+    conn.commit()
+
+def insert_issuer_group_urls(conn, issuer_group):
+    conn.execute("UPDATE IssuerGroup SET url_status=? WHERE idx_issuer_group=?;",
+                 (issuer_group.url_status,issuer_group.idx_issuer_group))
+    def insert_urls(type_, urls):
+        query = "INSERT INTO {}URL (url, idx_issuer_group) VALUES (?, ?);".format(type_)
+        for url in urls:
+            conn.execute(query,(url, issuer_group.idx_issuer_group))
+    insert_urls("Plan", issuer_group.plan_urls)
+    insert_urls("Provider", issuer_group.provider_urls)
+    insert_urls("Formulary", issuer_group.formulary_urls)
+    conn.commit()
+
+
+def query_issuer_group_urls(conn, issuer_group):
+    def query_urls(type_):
+        query = "SELECT url FROM {}URL WHERE (idx_issuer_group=?);".format(type_)
+        result = conn.execute(query,(issuer_group.idx_issuer_group,)).fetchall()
+        return [x[0] for x in result]
+    issuer_group.plan_urls = query_urls("Plan")
+    issuer_group.provider_urls = query_urls("Provider")
+    issuer_group.formulary_urls = query_urls("Formulary")
+
+def query_issuer_group_issuers(conn, issuer_group):
+    q = """SELECT id_issuer, name, marketplace_category, state FROM Issuer
+               WHERE (Issuer.idx_issuer_group = ?);"""
+    issuer_query = conn.execute(q, (issuer_group.idx_issuer_group,))
+    for row in issuer_query.fetchall():
+        issuer = models.Issuer()
+        issuer.issuer_group = issuer_group
+        issuer.id_issuer = row[0]
+        issuer.name = row[1]
+        issuer.marketplace_category = row[2]
+        issuer.state = row[3]
+        issuer_group.issuers.append(issuer)
+
+
+def query_requested_groups(conn, requested_ids, requested_states):
+    if requested_states:
+        state_query = ', '.join('?' for _ in requested_states)
+    if requested_ids:
+        id_query = ', '.join('?' for _ in requested_ids)
+
+    if requested_ids and requested_states:
+        where = """
+            WHERE (Issuer.id_issuer IN ({})) AND (Issuer.state IN ({}))
+                AND""".format(id_query, state_query)
+        params = tuple(requested_ids + requested_states)
+    elif requested_ids and not requested_states:
+        where = """
+            WHERE (Issuer.id_issuer IN ({}))
+                AND""".format(id_query)
+        params = tuple(requested_ids)
+    elif not requested_ids and requested_states:
+        where = """
+            WHERE (Issuer.state IN ({}))
+                AND""".format(state_query)
+        params = tuple(requested_states)
+    else:
+        where = """WHERE """.format()
+        params = tuple()
+
+    group_query = conn.execute("""
+        SELECT IssuerGroup.idx_issuer_group, IssuerGroup.url_submitted FROM Issuer
+            NATURAL JOIN IssuerGroup
+            {where} IssuerGroup.url_submitted <> "NOT SUBMITTED"
+            GROUP BY IssuerGroup.idx_issuer_group;
+        """.format(where=where), params)
+    groups = []
+    for row in group_query.fetchall():
+        group = models.IssuerGroup()
+        group.idx_issuer_group = row[0]
+        group.url_submitted = row[1]
+        groups.append(group)
+    conn.commit()
+    return groups
+
+def init_issuer_group_db(idx_issuer_group):
+    fname = get_db_fname(idx_issuer_group)
+    if not os.path.exists("db"):
+        os.mkdir("db")
+    if os.path.exists(fname):
+        logging.warning("DB file {} already exists. Replacing".format(fname))
+        os.remove(fname)
+
+    conn = sqlite3.connect(fname)
+    conn.executescript('''
+    CREATE TABLE Issuer (id_issuer            INTEGER PRIMARY KEY,
+                         name                 TEXT,
+                         marketplace_category TEXT,
+                         state                TEXT);
 
     CREATE TABLE Plan (idx_plan       INTEGER PRIMARY KEY AUTOINCREMENT,
                        id_plan        TEXT    NOT NULL,
@@ -94,46 +212,43 @@ def init_db(id_issuer):
 
     CREATE TABLE Provider_Plan (idx_provider INTEGER NOT NULL,
                                 idx_plan     INTEGER NOT NULL,
+                                network_tier TEXT    NOT NULL,
                                 UNIQUE(idx_provider,idx_plan) ON CONFLICT IGNORE,
                                 FOREIGN KEY(idx_provider) REFERENCES Provider(idx_provider),
                                 FOREIGN KEY(idx_plan) REFERENCES Specialty(idx_plan));
 
+    CREATE TABLE Drug (idx_drug    INTEGER PRIMARY KEY AUTOINCREMENT,
+                       rxnorm_id  INTEGER NOT NULL,
+                       drug_name   TEXT    NOT NULL);
+
+    CREATE TABLE Drug_Plan (idx_drug            INTEGER NOT NULL,
+                            idx_plan            INTEGER NOT NULL,
+                            drug_tier           TEXT    NOT NULL,
+                            prior_authorization INTEGER,
+                            step_therapy        INTEGER,
+                            quantity_limit      INTEGER,
+                            UNIQUE(idx_drug,idx_plan) ON CONFLICT IGNORE,
+                            FOREIGN KEY(idx_drug) REFERENCES Drug(idx_drug),
+                            FOREIGN KEY(idx_plan) REFERENCES Plan(idx_plan));
     ''')
     conn.commit()
     return conn
 
-def open_db(id_issuer):
-    fname = get_db_fname(id_issuer)
+def open_issuer_group_db(id_group):
+    fname = get_db_fname(id_group)
     conn = sqlite3.connect(fname)
     return conn
 
-def close_db(conn, commit=True):
+def close_issuer_group_db(conn, commit=True):
     if commit:
         conn.commit()
     conn.close()
 
-def insert_issuer_urls(conn, issuer, plan_urls, provider_urls):
-    for plan_url in plan_urls:
-        conn.execute("INSERT INTO PlanURL (url, id_issuer) VALUES (?, ?);",
-                     (plan_url, issuer.id_issuer))
-    for provider_url in provider_urls:
-        conn.execute("INSERT INTO ProviderURL (url, id_issuer) VALUES (?, ?);",
-                     (provider_url, issuer.id_issuer))
-
-def query_issuer_urls(conn, issuer):
-    plan_urls = conn.execute("SELECT url FROM PlanURL WHERE (id_issuer=?);",
-                             (issuer.id_issuer,)).fetchall()
-    prov_urls = conn.execute("SELECT url FROM ProviderURL WHERE (id_issuer=?);",
-                             (issuer.id_issuer,)).fetchall()
-    first = lambda xs: [x[0] for x in xs]
-    return (first(plan_urls), first(prov_urls))
-
 def insert_issuer(conn,issuer):
-    conn.execute("INSERT INTO Issuer VALUES (?,?,?,?,?);",
+    conn.execute("INSERT INTO Issuer VALUES (?,?,?,?);",
                  (issuer.id_issuer,
                   issuer.name,
                   issuer.marketplace_category,
-                  issuer.url_submitted,
                   issuer.state))
 
 def insert_plans(conn, plans):
@@ -144,7 +259,7 @@ def insert_plans(conn, plans):
                       p.plan_id_type,
                       p.marketing_name,
                       p.summary_url))
-        p.idx_plan = conn.execute("SELECT last_insert_rowid();").fetchone()[0]
+        p.idx_plan = get_last_idx(conn)
 
 def query_issuer_ids(conn):
     res = conn.execute("SELECT id_issuer FROM Issuer;").fetchall()
@@ -163,18 +278,24 @@ def query_plans(conn, issuer):
         issuer.plans.append(p)
 
 def query_issuer(conn, id_issuer, query_plans=False):
-    res = conn.execute("SELECT name, marketplace_category, url_submitted, state FROM Issuer WHERE (id_issuer=?);",(id_issuer,))
+    res = conn.execute("SELECT name, marketplace_category, state FROM Issuer WHERE (id_issuer=?);",(id_issuer,))
     res = res.fetchone()
     issuer = models.Issuer()
     issuer.id_issuer=id_issuer
     issuer.name=res[0]
     issuer.marketplace_category=res[1]
-    issuer.url_submitted=res[2]
-    issuer.state=res[3]
+    issuer.state=res[2]
     issuer.plans=[]
     if query_plans:
         query_plans(conn, issuer)
     return issuer
+
+def query_issuers(conn):
+    ids = query_issuer_ids(conn)
+    issuers = []
+    for id_ in ids:
+        issuers.append(query_issuer(conn, id_))
+    return issuers
 
 def query_languages(conn):
     res = conn.execute("SELECT idx_language, language FROM Language;").fetchall()
@@ -198,7 +319,7 @@ def insert_providers(conn, providers):
                      (provider.npi, provider.name,
                       provider.last_updated_on.toordinal(),
                       int(provider.type), int(provider.accepting)))
-        provider.idx_provider = conn.execute("SELECT last_insert_rowid();").fetchone()[0]
+        provider.idx_provider = get_last_idx(conn)
         for facility_type in provider.facility_types:
             if facility_type.facility_type not in facility_types:
                 facility_types[facility_type.facility_type] = insert_facility_type(conn, facility_type)
@@ -230,17 +351,17 @@ def insert_addresses(conn, provider):
 
 def insert_language(conn, language):
     conn.execute("INSERT INTO Language (language) VALUES (?);", (language.language,))
-    language.idx_language = conn.execute("SELECT last_insert_rowid();").fetchone()[0]
+    language.idx_language = get_last_idx(conn)
     return language
 
 def insert_specialty(conn, specialty):
     conn.execute("INSERT INTO Specialty (specialty) VALUES (?);", (specialty.specialty,))
-    specialty.idx_specialty = conn.execute("SELECT last_insert_rowid();").fetchone()[0]
+    specialty.idx_specialty = get_last_idx(conn)
     return specialty
 
 def insert_facility_type(conn, facility_type):
     conn.execute("INSERT INTO FacilityType (facility_type) VALUES (?);", (facility_type.facility_type,))
-    facility_type.idx_facility_type = conn.execute("SELECT last_insert_rowid();").fetchone()[0]
+    facility_type.idx_facility_type = get_last_idx(conn)
     return facility_type
 
 def insert_provider_languages(conn, provider):
@@ -259,6 +380,25 @@ def insert_provider_facility_types(conn, provider):
                      (provider.idx_provider, facility_type.idx_facility_type))
 
 def insert_provider_plans(conn, provider):
-    for plan in provider.plans:
-        conn.execute("INSERT INTO Provider_Plan (idx_provider, idx_plan) VALUES (?,?);", (provider.idx_provider, plan.idx_plan))
+    for prov_plan in provider.plans:
+        conn.execute("INSERT INTO Provider_Plan (idx_provider, idx_plan, network_tier) VALUES (?,?,?);",
+                     (prov_plan.provider.idx_provider,
+                      prov_plan.plan.idx_plan,
+                      prov_plan.network_tier))
+
+def insert_drugs(conn, drugs):
+    for drug in drugs:
+        conn.execute("INSERT INTO Drug (rx_norm_id, drug_name) VALUES (?,?);",
+                     (drug.rxnorm_id, drug.drug_name))
+        drug.idx_drug = get_last_idx(conn)
+
+def insert_drug_plans(conn, drug):
+    for drug_plan in drug.plans:
+        conn.execute("INSERT INTO Drug_Plan (idx_drug, idx_plan, drug_tier, prior_authorization, step_therapy, quantity_limit) VALUES (?,?,?,?,?);",
+                     (drug_plan.drug.idx_drug,
+                      drug_plan.plan.idx_plan,
+                      drug_plan.drug_tier,
+                      drug_plan.prior_authorization,
+                      drug_plan.step_therapy,
+                      drug_plan.quantity_limit))
 

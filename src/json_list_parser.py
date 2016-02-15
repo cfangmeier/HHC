@@ -25,6 +25,7 @@ last_bytes = 0
 def format_progress(downloaded, total):
     global last_time, last_bytes
     from math import log2, floor
+    if(downloaded < last_bytes): last_bytes = 0
     suffixes = ['', 'kB', 'MB', 'GB', 'TB']
 
     now = datetime.now()
