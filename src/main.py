@@ -22,6 +22,7 @@ ch = logging.FileHandler("main.log", mode='w')
 ch.setFormatter(logging.Formatter(fmt="%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
 LOGGER.addHandler(ch)
 
+PARTIAL_DATA = False
 
 
 def get_cms_spreadsheet(url):
@@ -84,7 +85,6 @@ def pull_issuer_group_index(issuer_group):
         LOGGER.error("FAILED TO LOAD JSON INDEX FOR ISSUER GROUP {} FROM URL \"{}\" ".format(issuer_group.idx_issuer_group, issuer_group.url_submitted, e))
     return issuer_group
 
-
 def pull_plan_fulldata(conn, issuers, plan_url):
     LOGGER.info("Pulling plan page at {}".format(plan_url))
     plans = {}
@@ -125,11 +125,17 @@ def pull_provider_fulldata(conn, issuers, plans, provider_url):
         providers = []
         for i,((bytes_read,file_size),provider_dict) in enumerate(json_objs):
             try:
-                provider, fake_plans = models.build_provider_from_dict(issuers, plans, provider_dict)
+                provider, fake_plans, fake_issuers = models.build_provider_from_dict(issuers, plans, provider_dict)
+                if fake_issuers:
+                    LOGGER.warning("Found provider {} with undocumented issuer: {}".format(provider.name,list(fake_issuers.keys())))
+                    db.insert_issuers(conn, fake_issuers.values())
+                    issuers.update(fake_issuers)
+                if fake_plans:
+                    LOGGER.warning("Found provider {} with undocumented plans: {}".format(provider.name,list(fake_plans.keys())))
+                    db.insert_plans(conn, fake_plans.values())
+                    plans.update(fake_plans)
                 if fake_plans:
                     LOGGER.warning("Found provider {} with undocumented plans: {}".format(provider.name,fake_plans.keys()))
-                db.insert_plans(conn, fake_plans.values())
-                plans.update(fake_plans)
                 providers.append(provider)
             except Exception as e:
                 LOGGER.exception(e)
@@ -142,6 +148,7 @@ def pull_provider_fulldata(conn, issuers, plans, provider_url):
                 db.insert_providers(conn, providers)
                 conn.commit()
                 providers.clear()
+                if PARTIAL_DATA and i>500: break;
         db.insert_providers(conn, providers)
         conn.commit()
     except Exception as e:
@@ -155,29 +162,32 @@ def pull_formulary_fulldata(conn, issuers, plans, formulary_url):
         drugs = []
         for i,((bytes_read,file_size),drug_dict) in enumerate(json_objs):
             try:
-                drug, fake_plans = models.build_drug_from_dict(issuers, plans, drug_dict)
+                drug, fake_plans, fake_issuers = models.build_drug_from_dict(issuers, plans, drug_dict)
+                if fake_issuers:
+                    LOGGER.warning("Found drug {} with undocumented issuer: {}".format(drug.drug_name,list(fake_issuers.keys())))
+                    db.insert_issuers(conn, fake_issuers.values())
+                    issuers.update(fake_issuers)
                 if fake_plans:
-                    LOGGER.warning("Found provider {} with undocumented plans: {}".format(drug.drug_name,fake_plans.keys()))
-                db.insert_plans(conn, fake_plans.values())
-                plans.update(fake_plans)
+                    LOGGER.warning("Found drug {} with undocumented plans: {}".format(drug.drug_name,list(fake_plans.keys())))
+                    db.insert_plans(conn, fake_plans.values())
+                    plans.update(fake_plans)
                 drugs.append(drug)
             except Exception as e:
                 LOGGER.exception(e)
-                # LOGGER.info(str(drug_dict))
                 continue
-            if((i%1000) == 0):
+            if((i%100) == 0):
                 s = format_progress(bytes_read, file_size)
                 LOGGER.info("Downloaded {}".format(s))
                 LOGGER.info("Parsed {} Drugs".format(i))
                 db.insert_drugs(conn, drugs)
                 conn.commit()
                 drugs.clear()
+                if PARTIAL_DATA and i>500: break;
         db.insert_drugs(conn, drugs)
         conn.commit()
     except Exception as e:
         LOGGER.exception(e)
         LOGGER.warning("ERROR LOADING DRUG DATA FROM {}".format(formulary_url))
-
 
 def init_full_pull_logger(id_issuer):
     global LOGGER
@@ -186,7 +196,6 @@ def init_full_pull_logger(id_issuer):
     ch = logging.FileHandler(log_name, mode='w')
     ch.setFormatter(logging.Formatter(fmt="%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
     LOGGER.addHandler(ch)
-
 
 def pull_issuer_group_fulldata(args):
     issuer_group, issuers_all = args
@@ -197,26 +206,29 @@ def pull_issuer_group_fulldata(args):
     LOGGER.info("PULLING FULLDATA FOR ISSUER GROUP {}".format(issuer_group.idx_issuer_group))
     LOGGER.info("WITH ISSUERS {}".format([i.id_issuer for i in issuer_group.issuers]))
     plans = {}
+
     LOGGER.info("BEGIN PULLING PLAN DATA")
     for plan_url in issuer_group.plan_urls:
         plans.update(pull_plan_fulldata(conn, issuers_all, plan_url))
     LOGGER.info("PULLED {} PLANS".format(len(plans)))
+
+    LOGGER.info("BEGIN PULLING FORMULARY DATA")
+    n = len(issuer_group.formulary_urls)
+    for i, formulary_url in enumerate(issuer_group.formulary_urls):
+        LOGGER.info("Pulling formulary page {} of {} at {}".format(i+1, n, formulary_url))
+        pull_formulary_fulldata(conn, issuers_all, plans, formulary_url)
+    LOGGER.info("FINISHED PULLING FORMULARY DATA")
 
     LOGGER.info("BEGIN PULLING PROVIDER DATA")
     n = len(issuer_group.provider_urls)
     for i, provider_url in enumerate(issuer_group.provider_urls):
         LOGGER.info("Pulling provider page {} of {} at {}".format(i+1, n, provider_url))
         pull_provider_fulldata(conn, issuers_all, plans, provider_url)
+    LOGGER.info("FINISHED PULLING PROVIDER DATA")
 
-    LOGGER.info("BEGIN PULLING FORMULARY DATA")
-    n = len(issuer_group.formulary_urls)
-    for i, formulary_url in enumerate(issuer_group.formulary_urls):
-        LOGGER.info("Pulling provider page {} of {} at {}".format(i+1, n, formulary_url))
-        pull_formulary_fulldata(conn, issuers_all, plans, formulary_url)
-    LOGGER.info("FINISHED PULLING FORMULARY DATA")
+
     conn.close()
     LOGGER.info("FINISHED PULLING FULLDATA")
-
 
 def pull_issuer_groups_fulldata(requested_ids, requested_states, processes):
     conn = db.open_index_db()
@@ -235,7 +247,6 @@ def pull_issuer_groups_fulldata(requested_ids, requested_states, processes):
     with multiprocessing.Pool(processes) as p:
         p.map(pull_issuer_group_fulldata, groups)
 
-
 def pull_issuers_metadata(cms_url, requested_ids, requested_states):
     conn = init_index_db(cms_url)
     groups = db.query_requested_groups(conn, requested_ids, requested_states)
@@ -246,7 +257,6 @@ def pull_issuers_metadata(cms_url, requested_ids, requested_states):
             issuer_group = future.result()
             db.insert_issuer_group_urls(conn, issuer_group)
     conn.close()
-
 
 def main():
     parser = argparse.ArgumentParser(description="Utility to Download Insurance Acceptance Data")

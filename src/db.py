@@ -32,7 +32,8 @@ def create_index_db():
                          name                  TEXT    NOT NULL,
                          marketplace_category  TEXT    NOT NULL,
                          state                 TEXT    NOT NULL,
-                         FOREIGN KEY(idx_issuer_group) REFERENCES IssuerGroup(idx_issuer_group));
+                         FOREIGN KEY(idx_issuer_group) REFERENCES IssuerGroup(idx_issuer_group),
+                         UNIQUE (id_issuer) ON CONFLICT IGNORE);
 
     CREATE TABLE ProviderURL (url              TEXT    NOT NULL,
                               idx_issuer_group INTEGER NOT NULL,
@@ -156,7 +157,8 @@ def init_issuer_group_db(idx_issuer_group):
     CREATE TABLE Issuer (id_issuer            INTEGER PRIMARY KEY,
                          name                 TEXT,
                          marketplace_category TEXT,
-                         state                TEXT);
+                         state                TEXT,
+                         UNIQUE (id_issuer) ON CONFLICT IGNORE);
 
     CREATE TABLE Plan (idx_plan       INTEGER PRIMARY KEY AUTOINCREMENT,
                        id_plan        TEXT    NOT NULL,
@@ -223,7 +225,7 @@ def init_issuer_group_db(idx_issuer_group):
 
     CREATE TABLE Drug_Plan (idx_drug            INTEGER NOT NULL,
                             idx_plan            INTEGER NOT NULL,
-                            drug_tier           TEXT    NOT NULL,
+                            drug_tier           TEXT,
                             prior_authorization INTEGER,
                             step_therapy        INTEGER,
                             quantity_limit      INTEGER,
@@ -250,6 +252,10 @@ def insert_issuer(conn,issuer):
                   issuer.name,
                   issuer.marketplace_category,
                   issuer.state))
+
+def insert_issuers(conn, issuers):
+    for issuer in issuers:
+        insert_issuer(conn, issuer)
 
 def insert_plans(conn, plans):
     for p in plans:
@@ -388,13 +394,14 @@ def insert_provider_plans(conn, provider):
 
 def insert_drugs(conn, drugs):
     for drug in drugs:
-        conn.execute("INSERT INTO Drug (rx_norm_id, drug_name) VALUES (?,?);",
+        conn.execute("INSERT INTO Drug (rxnorm_id, drug_name) VALUES (?,?);",
                      (drug.rxnorm_id, drug.drug_name))
         drug.idx_drug = get_last_idx(conn)
+        insert_drug_plans(conn, drug)
 
 def insert_drug_plans(conn, drug):
     for drug_plan in drug.plans:
-        conn.execute("INSERT INTO Drug_Plan (idx_drug, idx_plan, drug_tier, prior_authorization, step_therapy, quantity_limit) VALUES (?,?,?,?,?);",
+        conn.execute("INSERT INTO Drug_Plan (idx_drug, idx_plan, drug_tier, prior_authorization, step_therapy, quantity_limit) VALUES (?,?,?,?,?,?);",
                      (drug_plan.drug.idx_drug,
                       drug_plan.plan.idx_plan,
                       drug_plan.drug_tier,

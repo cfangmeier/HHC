@@ -165,11 +165,14 @@ def build_provider_from_dict(issuers, plans, prov_dict):
                              for facility_type in unique(prov_dict.get('facility_type',[]))]
 
     fake_plans = {}
+    fake_issuers = {}
     for plan_dict in prov_dict.get('plans', []):
         id_plan = plan_dict['plan_id']
         if id_plan not in plans:
-            plan = build_plan_from_dict(issuers,plan_dict, fake=True)
+            plan, fake_issuer = build_plan_from_dict(issuers,plan_dict, fake=True)
             fake_plans[id_plan] = plan
+            if fake_issuer:
+                fake_issuers[fake_issuer.id_issuer] = fake_issuer
         else:
             plan = plans[id_plan]
         prov_plan = ProviderPlan()
@@ -187,7 +190,7 @@ def build_provider_from_dict(issuers, plans, prov_dict):
     if type_ == 'facility':
         prov.type = ProviderType.facility
         prov.name = prov_dict.get('facility_name',"N/A")
-    return prov, fake_plans
+    return prov, fake_plans, fake_issuers
 
 class Drug:
     def __init__(self):
@@ -212,18 +215,22 @@ def build_drug_from_dict(issuers, plans, drug_dict):
     drug.drug_name = drug_dict['drug_name']
 
     fake_plans = {}
+    fake_issuers = {}
     for plan_dict in drug_dict.get('plans', []):
         id_plan = plan_dict['plan_id']
         if id_plan not in plans:
-            plan = build_plan_from_dict(issuers,plan_dict, fake=True)
+            plan, fake_issuer = build_plan_from_dict(issuers,plan_dict, fake=True)
             fake_plans[id_plan] = plan
+            if fake_issuer:
+                fake_issuers[fake_issuer.id_issuer] = fake_issuer
         else:
             plan = plans[id_plan]
         drug_plan = DrugPlan()
         drug_plan.drug = drug
         drug_plan.plan = plan
         drug_plan.prior_authorization = plan_dict.get('prior_authorization',None)
+        drug_plan.drug_tier = plan_dict.get('drug_tier',None)
         drug_plan.step_therapy = plan_dict.get('step_therapy',None)
         drug_plan.quantity_limit = plan_dict.get('quantity_limit',None)
         drug.plans.append(drug_plan)
-    return drug, fake_plans
+    return drug, fake_plans, fake_issuers
