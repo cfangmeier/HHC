@@ -9,6 +9,7 @@ import collections
 import multiprocessing
 import concurrent.futures
 import urllib.request as request
+import urllib.parse as parse
 
 import openpyxl
 
@@ -26,13 +27,18 @@ PARTIAL_DATA = False
 
 
 def get_cms_spreadsheet(url):
-    LOGGER.info("Pulling CMS Spreadsheet from {}".format(url))
-    with request.urlopen(url) as f:
-        b = io.BytesIO(f.read())
-    zf = zipfile.ZipFile(b)
-    fname = zf.namelist()[0]
-    nb = openpyxl.load_workbook(zf.open(fname))
-    LOGGER.info("Sucessfully pulled CMS Spreadsheet".format(url))
+    parse_result = parse.urlparse(url)
+    if parse_result.scheme == "file":
+        LOGGER.info("Opening local CMS Spreadsheet from {}".format(parse_result.path))
+        nb = openpyxl.load_workbook(open(parse_result.path, 'rb'))
+    else: # Web URL
+        LOGGER.info("Pulling CMS Spreadsheet from {}".format(url))
+        with request.urlopen(url) as f:
+            b = io.BytesIO(f.read())
+        zf = zipfile.ZipFile(b)
+        fname = zf.namelist()[0]
+        nb = openpyxl.load_workbook(zf.open(fname))
+        LOGGER.info("Sucessfully pulled CMS Spreadsheet".format(url))
     return nb.active
 
 def init_index_db(cms_url):
@@ -262,7 +268,7 @@ def main():
     parser = argparse.ArgumentParser(description="Utility to Download Insurance Acceptance Data")
     add = parser.add_argument
     add('--cmsurl', default="http://download.cms.gov/marketplace-puf/2016/machine-readable-url-puf.zip",
-            help = "the url to \"machine-readable-url-puf.zip\"")
+            help = "the url to \"machine-readable-url-puf.zip\", or the path to \"Machine_Readable_PUF_*.xlsx\" in the form \"file:/path/to/file\"")
     add('--issuer_ids', default = None, nargs='+', type=int,
             help="Specify specific issuers to do fulldata pull on")
     add('--states', default = None, nargs='+', type=str,
