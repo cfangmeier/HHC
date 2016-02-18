@@ -154,7 +154,11 @@ def build_provider_from_dict(issuers, plans, prov_dict):
     prov = Provider()
     prov.type = ProviderType.individual
     prov.npi = prov_dict.get('npi',None)
-    if prov.npi is not None: prov.npi = int(prov.npi)
+    if prov.npi is not None:
+        try:
+            prov.npi = int(prov.npi)
+        except ValueError:
+            prov.npi = None
     prov.last_updated_on = decode_date(prov_dict.get('last_updated_on',{}))
     prov.accepting = decode_accepting(prov_dict.get('accepting',None))
     prov.languages = [Language(language) for language in unique(prov_dict.get('languages', []))]

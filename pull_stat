@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+ls -lht db/*.sqlite3  | head -n20
+ls -lhS db/*.log | head -n10 && ls db/*.log | wc -l
+tail db/*.log | grep "FINISHED PULLING FULLDATA" | wc -l
+du -h db | cut  -f1
