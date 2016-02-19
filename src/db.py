@@ -37,14 +37,17 @@ def create_index_db():
 
     CREATE TABLE ProviderURL (url              TEXT    NOT NULL,
                               idx_issuer_group INTEGER NOT NULL,
+                              download_status  TEXT    NOT NULL,
                               FOREIGN KEY(idx_issuer_group) REFERENCES IssuerGroup(id_issuer_group));
 
     CREATE TABLE PlanURL (url              TEXT    NOT NULL,
                           idx_issuer_group INTEGER NOT NULL,
+                          download_status  TEXT    NOT NULL,
                           FOREIGN KEY(idx_issuer_group) REFERENCES IssuerGroup(id_issuer_group));
 
     CREATE TABLE FormularyURL (url              TEXT    NOT NULL,
                                idx_issuer_group INTEGER NOT NULL,
+                               download_status  TEXT    NOT NULL,
                                FOREIGN KEY(idx_issuer_group) REFERENCES IssuerGroup(id_issuer_group));
     ''')
     return conn
@@ -52,6 +55,33 @@ def create_index_db():
 def open_index_db():
     fname = get_db_fname('index')
     return sqlite3.connect(fname)
+
+def get_download_status(url, type_):
+    types = {'plan':"PlanURL",
+             'provider': "ProviderURL",
+             'formulary': "FormularyURL"}
+    table = types[type_.lower()]
+    conn = open_index_db()
+    query = "SELECT download_status FROM {} WHERE url=?;".format(table)
+    res = conn.execute(query,(url,)).fetchall()
+    conn.close()
+
+    matches = len(res)
+    if matches != 1:
+        raise ValueError("Bad URL () Specified, matched {} rows in DB".format(url,matches))
+    return res[0][0]
+
+
+def update_download_status(url, type_, status):
+    types = {'plan':"PlanURL",
+             'provider': "ProviderURL",
+             'formulary': "FormularyURL"}
+    table = types[type_.lower()]
+    conn = open_index_db()
+    query = "UPDATE {} SET download_status=? WHERE url=?;".format(table)
+    conn.execute(query,(status,url))
+    conn.commit()
+    conn.close()
 
 def insert_issuer_groups(conn, issuer_groups):
     for issuer_group in issuer_groups:
@@ -72,9 +102,9 @@ def insert_issuer_group_urls(conn, issuer_group):
     conn.execute("UPDATE IssuerGroup SET url_status=? WHERE idx_issuer_group=?;",
                  (issuer_group.url_status,issuer_group.idx_issuer_group))
     def insert_urls(type_, urls):
-        query = "INSERT INTO {}URL (url, idx_issuer_group) VALUES (?, ?);".format(type_)
+        query = "INSERT INTO {}URL (url, download_status, idx_issuer_group) VALUES (?, ?, ?);".format(type_)
         for url in urls:
-            conn.execute(query,(url, issuer_group.idx_issuer_group))
+            conn.execute(query,(url, 'not finished', issuer_group.idx_issuer_group))
     insert_urls("Plan", issuer_group.plan_urls)
     insert_urls("Provider", issuer_group.provider_urls)
     insert_urls("Formulary", issuer_group.formulary_urls)
@@ -141,7 +171,6 @@ def query_requested_groups(conn, requested_ids, requested_states):
         group.idx_issuer_group = row[0]
         group.url_submitted = row[1]
         groups.append(group)
-    conn.commit()
     return groups
 
 def init_issuer_group_db(idx_issuer_group):
@@ -166,7 +195,7 @@ def init_issuer_group_db(idx_issuer_group):
                        plan_id_type   TEXT    NOT NULL,
                        marketing_name TEXT    NOT NULL,
                        summary_url    TEXT    NOT NULL,
-                       UNIQUE(idx_plan,id_issuer) ON CONFLICT REPLACE,
+                       UNIQUE(id_plan,id_issuer) ON CONFLICT IGNORE,
                        FOREIGN KEY(id_issuer) REFERENCES Issuer(id_issuer));
 
     CREATE TABLE Provider (idx_provider    INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -174,7 +203,8 @@ def init_issuer_group_db(idx_issuer_group):
                            name            TEXT    NOT NULL,
                            last_updated_on INTEGER NOT NULL,
                            type            INTEGER NOT NULL,
-                           accepting       INTEGER NOT NULL);
+                           accepting       INTEGER NOT NULL,
+                           UNIQUE(npi, name) ON CONFLICT IGNORE);
 
     CREATE TABLE Address (idx_provider INTEGER NOT NULL,
                           address      TEXT,
@@ -219,9 +249,10 @@ def init_issuer_group_db(idx_issuer_group):
                                 FOREIGN KEY(idx_provider) REFERENCES Provider(idx_provider),
                                 FOREIGN KEY(idx_plan) REFERENCES Specialty(idx_plan));
 
-    CREATE TABLE Drug (idx_drug    INTEGER PRIMARY KEY AUTOINCREMENT,
-                       rxnorm_id  INTEGER NOT NULL,
-                       drug_name   TEXT    NOT NULL);
+    CREATE TABLE Drug (idx_drug  INTEGER PRIMARY KEY AUTOINCREMENT,
+                       rxnorm_id INTEGER NOT NULL,
+                       drug_name TEXT    NOT NULL,
+                       UNIQUE(rxnorm_id) ON CONFLICT IGNORE);
 
     CREATE TABLE Drug_Plan (idx_drug            INTEGER NOT NULL,
                             idx_plan            INTEGER NOT NULL,

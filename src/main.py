@@ -25,6 +25,8 @@ LOGGER.addHandler(ch)
 
 PARTIAL_DATA = False
 
+DOWNLOAD_ATTEMPTS = 3
+
 
 def get_cms_spreadsheet(url):
     parse_result = parse.urlparse(url)
@@ -92,18 +94,10 @@ def pull_issuer_group_index(issuer_group):
     return issuer_group
 
 def pull_plan_fulldata(conn, issuers, plan_url):
-    LOGGER.info("Pulling plan page at {}".format(plan_url))
     plans = {}
     try:
-        req = request.urlopen(plan_url, timeout=20)
-        file_size = req.info().get('Content-Length')
-        try:
-            file_size = int(file_size)
-        except ValueError:
-            file_size = 0
-        LOGGER.info("Downloading plan json\n\tFile Size: {}Bytes".format(file_size))
-        json_objs = json_list_parser(req, file_size)
-        for i,((bytes_read,file_size),plan_dict) in enumerate(json_objs):
+        json_objs = json_list_parser(plan_url)
+        for (bytes_read,file_size),plan_dict in json_objs:
             try:
                 plan, fake_issuer = models.build_plan_from_dict(issuers, plan_dict)
                 if fake_issuer:
@@ -118,16 +112,14 @@ def pull_plan_fulldata(conn, issuers, plan_url):
                 LOGGER.info(plan_dict)
                 continue
         db.insert_plans(conn, plans.values())
-        conn.commit()
     except Exception as e:
         LOGGER.exception(e)
         LOGGER.warning("ERROR LOADING PLAN DATA FROM {}".format(plan_url))
-    return plans
+    return plans, issuers
 
 def pull_provider_fulldata(conn, issuers, plans, provider_url):
     try:
-        req = request.urlopen(provider_url)
-        json_objs = json_list_parser(req)
+        json_objs = json_list_parser(provider_url)
         providers = []
         for i,((bytes_read,file_size),provider_dict) in enumerate(json_objs):
             try:
@@ -152,19 +144,16 @@ def pull_provider_fulldata(conn, issuers, plans, provider_url):
                 LOGGER.info("Downloaded {}".format(s))
                 LOGGER.info("Parsed {} Providers".format(i))
                 db.insert_providers(conn, providers)
-                conn.commit()
                 providers.clear()
                 if PARTIAL_DATA and i>500: break;
         db.insert_providers(conn, providers)
-        conn.commit()
     except Exception as e:
         LOGGER.exception(e)
         LOGGER.warning("ERROR LOADING PROVIDER DATA FROM {}".format(provider_url))
 
 def pull_formulary_fulldata(conn, issuers, plans, formulary_url):
     try:
-        req = request.urlopen(formulary_url)
-        json_objs = json_list_parser(req)
+        json_objs = json_list_parser(formulary_url)
         drugs = []
         for i,((bytes_read,file_size),drug_dict) in enumerate(json_objs):
             try:
@@ -186,11 +175,9 @@ def pull_formulary_fulldata(conn, issuers, plans, formulary_url):
                 LOGGER.info("Downloaded {}".format(s))
                 LOGGER.info("Parsed {} Drugs".format(i))
                 db.insert_drugs(conn, drugs)
-                conn.commit()
                 drugs.clear()
                 if PARTIAL_DATA and i>500: break;
         db.insert_drugs(conn, drugs)
-        conn.commit()
     except Exception as e:
         LOGGER.exception(e)
         LOGGER.warning("ERROR LOADING DRUG DATA FROM {}".format(formulary_url))
@@ -215,21 +202,62 @@ def pull_issuer_group_fulldata(args):
 
     LOGGER.info("BEGIN PULLING PLAN DATA")
     for plan_url in issuer_group.plan_urls:
-        plans.update(pull_plan_fulldata(conn, issuers_all, plan_url))
+        if db.get_download_status(plan_url, 'plan') != 'finished':
+            for attempt in range(DOWNLOAD_ATTEMPTS):
+                LOGGER.info("Pulling plan page at {}".format(plan_url))
+                LOGGER.info("\tAttempt {} of {}".format(attempt+1, DOWNLOAD_ATTEMPTS))
+                try:
+                    plans_url, issuers_all = pull_plan_fulldata(conn, issuers_all.copy(), plan_url)
+                    plans.update(plans_url)
+                    conn.commit()
+                    db.update_download_status(plan_url, 'plan', 'finished')
+                except TimeoutError:
+                    LOGGER.error("TIMEOUT WHILE DOWNLOADING FILE")
+                    conn.rollback()
+                    continue
+                break
+            else:
+                db.update_download_status(plan_url, 'plan', 'error')
     LOGGER.info("PULLED {} PLANS".format(len(plans)))
 
     LOGGER.info("BEGIN PULLING FORMULARY DATA")
     n = len(issuer_group.formulary_urls)
     for i, formulary_url in enumerate(issuer_group.formulary_urls):
-        LOGGER.info("Pulling formulary page {} of {} at {}".format(i+1, n, formulary_url))
-        pull_formulary_fulldata(conn, issuers_all, plans, formulary_url)
+        if db.get_download_status(formulary_url, 'formulary') != 'finished':
+            for attempt in range(DOWNLOAD_ATTEMPTS):
+                LOGGER.info("Pulling formulary page {} of {} at {}".format(i+1, n, formulary_url))
+                LOGGER.info("\tAttempt {} of {}".format(attempt+1, DOWNLOAD_ATTEMPTS))
+                try:
+                    pull_formulary_fulldata(conn, issuers_all, plans, formulary_url)
+                    conn.commit()
+                    db.update_download_status(formulary_url, 'formulary', 'finished')
+                except TimeoutError:
+                    LOGGER.error("TIMEOUT WHILE DOWNLOADING FILE")
+                    conn.rollback()
+                    continue
+                break
+            else:
+                db.update_download_status(formulary_url, 'formulary', 'error')
     LOGGER.info("FINISHED PULLING FORMULARY DATA")
 
     LOGGER.info("BEGIN PULLING PROVIDER DATA")
     n = len(issuer_group.provider_urls)
     for i, provider_url in enumerate(issuer_group.provider_urls):
-        LOGGER.info("Pulling provider page {} of {} at {}".format(i+1, n, provider_url))
-        pull_provider_fulldata(conn, issuers_all, plans, provider_url)
+        if db.get_download_status(provider_url, 'provider') != 'finished':
+            for attempt in range(DOWNLOAD_ATTEMPTS):
+                LOGGER.info("Pulling provider page {} of {} at {}".format(i+1, n, provider_url))
+                LOGGER.info("\tAttempt {} of {}".format(attempt+1, DOWNLOAD_ATTEMPTS))
+                try:
+                    pull_provider_fulldata(conn, issuers_all, plans, provider_url)
+                    conn.commit()
+                    db.update_download_status(provider_url, 'provider', 'finished')
+                except TimeoutError:
+                    LOGGER.error("TIMEOUT WHILE DOWNLOADING FILE")
+                    conn.rollback()
+                    continue
+                break
+            else:
+                db.update_download_status(provider_url, 'provider', 'error')
     LOGGER.info("FINISHED PULLING PROVIDER DATA")
 
 
