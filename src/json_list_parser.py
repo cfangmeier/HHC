@@ -20,7 +20,7 @@ def _get_file_size(stream):
         file_size = stream.info().get('Content-Length')
         try:
             file_size = int(file_size)
-        except ValueError:
+        except (ValueError, TypeError):
             file_size = -1
     return file_size
 
@@ -44,19 +44,24 @@ def format_progress(downloaded, total):
     last_bytes = downloaded
     last_time = now
 
-    suf_idx = floor(log2(total)/10)
-    suffix = suffixes[suf_idx]
-    downloaded /= 2**(suf_idx*10)
-    total /= 2**(suf_idx*10)
+    try:
+        suf_idx = floor(log2(total)/10)
+        suffix = suffixes[suf_idx]
+        downloaded /= 2**(suf_idx*10)
+        total /= 2**(suf_idx*10)
 
-    suf_idx = floor(log2(dl_speed)/10)
-    dl_suffix = suffixes[suf_idx]+'/s'
-    dl_speed /= 2**(suf_idx*10)
+        suf_idx = floor(log2(dl_speed)/10)
+        dl_suffix = suffixes[suf_idx]+'/s'
+        dl_speed /= 2**(suf_idx*10)
 
-    progress = downloaded/total * 100 if total > 0 else -1
-    s = "({:.2f}{}/{:.2f}{}),({:.2f}{}) {:.2f}%".format(downloaded, suffix, total, suffix,
-                                                        dl_speed, dl_suffix, progress)
-    return s
+        progress = downloaded/total * 100 if total > 0 else -1
+        s = "({:.2f}{}/{:.2f}{}),({:.2f}{}) {:.2f}%".format(downloaded, suffix, total, suffix,
+                                                            dl_speed, dl_suffix, progress)
+        return s
+    except ValueError:
+        return ""
+        
+
 
 
 def json_list_parser(url,
