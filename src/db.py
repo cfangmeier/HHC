@@ -69,7 +69,7 @@ def get_download_status(issuer_group, url, type_):
 
     matches = len(res)
     if matches != 1:
-        raise ValueError("Bad URL {}, Group_id {} Specified, matched {} rows in DB".format(url,matches))
+        raise ValueError("Bad URL {}, Group_id {} Specified, matched {} rows in DB".format(url, issuer_group.idx_issuer_group, matches))
     return res[0][0]
 
 
