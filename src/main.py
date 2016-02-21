@@ -23,7 +23,7 @@ ch = logging.FileHandler("main.log", mode='w')
 ch.setFormatter(logging.Formatter(fmt="%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
 LOGGER.addHandler(ch)
 
-PARTIAL_DATA = False
+PARTIAL_DATA = True
 
 DOWNLOAD_ATTEMPTS = 3
 
@@ -205,8 +205,8 @@ def pull_issuer_group_fulldata(args):
     for plan_url in issuer_group.plan_urls:
         if db.get_download_status(issuer_group, plan_url, 'plan') != 'finished':
             for attempt in range(DOWNLOAD_ATTEMPTS):
-                LOGGER.info("Pulling plan page at {}".format(plan_url))
-                LOGGER.info("\tAttempt {} of {}".format(attempt+1, DOWNLOAD_ATTEMPTS))
+                LOGGER.info("PULLING PLAN PAGE AT {}".format(plan_url))
+                LOGGER.info("\tATTEMPT {} of {}".format(attempt+1, DOWNLOAD_ATTEMPTS))
                 try:
                     plans_url, issuers_all = pull_plan_fulldata(conn, issuers_all.copy(), plan_url)
                     plans.update(plans_url)

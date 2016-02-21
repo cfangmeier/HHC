@@ -1,4 +1,5 @@
 import os
+import time
 import sqlite3
 import logging
 LOGGER = logging.getLogger('HHC')
@@ -77,11 +78,18 @@ def update_download_status(issuer_group, url, type_, status):
              'provider': "ProviderURL",
              'formulary': "FormularyURL"}
     table = types[type_.lower()]
-    conn = open_index_db()
     query = "UPDATE {} SET download_status=? WHERE url=? AND idx_issuer_group=?;".format(table)
-    conn.execute(query,(status, url, issuer_group.idx_issuer_group))
-    conn.commit()
-    conn.close()
+    while True:
+        try:
+            conn = open_index_db()
+            conn.execute(query,(status, url, issuer_group.idx_issuer_group))
+            conn.commit()
+            conn.close()
+            break
+        except Exception: #concurrent db access error, wait and try again
+            conn.close()
+            time.sleep(1)
+
 
 def insert_issuer_groups(conn, issuer_groups):
     for issuer_group in issuer_groups:
