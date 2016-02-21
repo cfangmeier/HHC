@@ -63,12 +63,12 @@ def get_download_status(issuer_group, url, type_):
     table = types[type_.lower()]
     conn = open_index_db()
     query = "SELECT download_status FROM {} WHERE url=? AND idx_issuer_group=?;".format(table)
-    res = conn.execute(query,(issuer_group.idx_issuer_group, url)).fetchall()
+    res = conn.execute(query,(url,issuer_group.idx_issuer_group)).fetchall()
     conn.close()
 
     matches = len(res)
     if matches != 1:
-        raise ValueError("Bad URL {} Specified, matched {} rows in DB".format(url,matches))
+        raise ValueError("Bad URL {}, Group_id {} Specified, matched {} rows in DB".format(url,matches))
     return res[0][0]
 
 
@@ -79,7 +79,7 @@ def update_download_status(issuer_group, url, type_, status):
     table = types[type_.lower()]
     conn = open_index_db()
     query = "UPDATE {} SET download_status=? WHERE url=? AND idx_issuer_group=?;".format(table)
-    conn.execute(query,(status, issuer_group.idx_issuer_group, url))
+    conn.execute(query,(status, url, issuer_group.idx_issuer_group))
     conn.commit()
     conn.close()
 
