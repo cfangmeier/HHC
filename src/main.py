@@ -203,7 +203,7 @@ def pull_issuer_group_fulldata(args):
 
     LOGGER.info("BEGIN PULLING PLAN DATA")
     for plan_url in issuer_group.plan_urls:
-        if db.get_download_status(plan_url, 'plan') != 'finished':
+        if db.get_download_status(issuer_group, plan_url, 'plan') != 'finished':
             for attempt in range(DOWNLOAD_ATTEMPTS):
                 LOGGER.info("Pulling plan page at {}".format(plan_url))
                 LOGGER.info("\tAttempt {} of {}".format(attempt+1, DOWNLOAD_ATTEMPTS))
@@ -211,54 +211,54 @@ def pull_issuer_group_fulldata(args):
                     plans_url, issuers_all = pull_plan_fulldata(conn, issuers_all.copy(), plan_url)
                     plans.update(plans_url)
                     conn.commit()
-                    db.update_download_status(plan_url, 'plan', 'finished')
+                    db.update_download_status(issuer_group, plan_url, 'plan', 'finished')
                 except TimeoutError:
                     LOGGER.error("TIMEOUT WHILE DOWNLOADING FILE")
                     conn.rollback()
                     continue
                 break
             else:
-                db.update_download_status(plan_url, 'plan', 'error')
+                db.update_download_status(issuer_group, plan_url, 'plan', 'error')
     LOGGER.info("PULLED {} PLANS".format(len(plans)))
 
     LOGGER.info("BEGIN PULLING FORMULARY DATA")
     n = len(issuer_group.formulary_urls)
     for i, formulary_url in enumerate(issuer_group.formulary_urls):
-        if db.get_download_status(formulary_url, 'formulary') != 'finished':
+        if db.get_download_status(issuer_group, formulary_url, 'formulary') != 'finished':
             for attempt in range(DOWNLOAD_ATTEMPTS):
                 LOGGER.info("Pulling formulary page {} of {} at {}".format(i+1, n, formulary_url))
                 LOGGER.info("\tAttempt {} of {}".format(attempt+1, DOWNLOAD_ATTEMPTS))
                 try:
                     pull_formulary_fulldata(conn, issuers_all, plans, formulary_url)
                     conn.commit()
-                    db.update_download_status(formulary_url, 'formulary', 'finished')
+                    db.update_download_status(issuer_group, formulary_url, 'formulary', 'finished')
                 except TimeoutError:
                     LOGGER.error("TIMEOUT WHILE DOWNLOADING FILE")
                     conn.rollback()
                     continue
                 break
             else:
-                db.update_download_status(formulary_url, 'formulary', 'error')
+                db.update_download_status(issuer_group, formulary_url, 'formulary', 'error')
     LOGGER.info("FINISHED PULLING FORMULARY DATA")
 
     LOGGER.info("BEGIN PULLING PROVIDER DATA")
     n = len(issuer_group.provider_urls)
     for i, provider_url in enumerate(issuer_group.provider_urls):
-        if db.get_download_status(provider_url, 'provider') != 'finished':
+        if db.get_download_status(issuer_group, provider_url, 'provider') != 'finished':
             for attempt in range(DOWNLOAD_ATTEMPTS):
                 LOGGER.info("Pulling provider page {} of {} at {}".format(i+1, n, provider_url))
                 LOGGER.info("\tAttempt {} of {}".format(attempt+1, DOWNLOAD_ATTEMPTS))
                 try:
                     pull_provider_fulldata(conn, issuers_all, plans, provider_url)
                     conn.commit()
-                    db.update_download_status(provider_url, 'provider', 'finished')
+                    db.update_download_status(issuer_group, provider_url, 'provider', 'finished')
                 except TimeoutError:
                     LOGGER.error("TIMEOUT WHILE DOWNLOADING FILE")
                     conn.rollback()
                     continue
                 break
             else:
-                db.update_download_status(provider_url, 'provider', 'error')
+                db.update_download_status(issuer_group, provider_url, 'provider', 'error')
     LOGGER.info("FINISHED PULLING PROVIDER DATA")
 
 
