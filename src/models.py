@@ -109,9 +109,12 @@ def add_address(provider, addr_dict):
     addr = Address()
     addr.provider=provider
     addr.zip=addr_dict.get('zip',None)
-    addr.address=addr_dict.get('address',None)
-    addr.city=addr_dict.get('city',None)
-    addr.state=addr_dict.get('state',None)
+    if 'address' in addr_dict:
+        addr.address = addr_dict['address'].lower()
+    if 'city' in addr_dict:
+        addr.city = addr_dict['city'].lower()
+    if 'state' in addr_dict:
+        addr.state = addr_dict['state'].lower()
     addr.phone=addr_dict.get('phone',None)
     provider.addresses.append(addr)
 
