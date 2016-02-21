@@ -56,14 +56,14 @@ def open_index_db():
     fname = get_db_fname('index')
     return sqlite3.connect(fname)
 
-def get_download_status(url, type_):
+def get_download_status(issuer_group, url, type_):
     types = {'plan':"PlanURL",
              'provider': "ProviderURL",
              'formulary': "FormularyURL"}
     table = types[type_.lower()]
     conn = open_index_db()
-    query = "SELECT download_status FROM {} WHERE url=?;".format(table)
-    res = conn.execute(query,(url,)).fetchall()
+    query = "SELECT download_status FROM {} WHERE url=? AND idx_issuer_group=?;".format(table)
+    res = conn.execute(query,(issuer_group.idx_issuer_group, url)).fetchall()
     conn.close()
 
     matches = len(res)
@@ -72,14 +72,14 @@ def get_download_status(url, type_):
     return res[0][0]
 
 
-def update_download_status(url, type_, status):
+def update_download_status(issuer_group, url, type_, status):
     types = {'plan':"PlanURL",
              'provider': "ProviderURL",
              'formulary': "FormularyURL"}
     table = types[type_.lower()]
     conn = open_index_db()
-    query = "UPDATE {} SET download_status=? WHERE url=?;".format(table)
-    conn.execute(query,(status,url))
+    query = "UPDATE {} SET download_status=? WHERE url=? AND idx_issuer_group=?;".format(table)
+    conn.execute(query,(status, issuer_group.idx_issuer_group, url))
     conn.commit()
     conn.close()
 
