@@ -82,9 +82,9 @@ def pull_issuer_group_index(issuer_group):
     try:
         with request.urlopen(issuer_group.url_submitted, timeout=20) as conn:
             js = json.loads(conn.read().decode('utf8'))
-            issuer_group.plan_urls = js['plan_urls']
-            issuer_group.provider_urls = js['provider_urls']
-            issuer_group.formulary_urls = js['formulary_urls']
+            issuer_group.plan_urls      = list(set(js['plan_urls']))
+            issuer_group.provider_urls  = list(set(js['provider_urls']))
+            issuer_group.formulary_urls = list(set(js['formulary_urls']))
             issuer_group.url_status = "good"
             LOGGER.info("FINISHED PULLING JSON INDEX FOR ISSUER GROUP {}".format(issuer_group.idx_issuer_group))
     except Exception as e:
@@ -112,6 +112,7 @@ def pull_plan_fulldata(conn, issuers, plan_url):
                 LOGGER.info(plan_dict)
                 continue
         db.insert_plans(conn, plans.values())
+        LOGGER.info("Finished Download of url: {}, size: {} Bytes".format(plan_url, file_size))
     except Exception as e:
         LOGGER.exception(e)
         LOGGER.warning("ERROR LOADING PLAN DATA FROM {}".format(plan_url))
@@ -132,8 +133,6 @@ def pull_provider_fulldata(conn, issuers, plans, provider_url):
                     LOGGER.warning("Found provider {} with undocumented plans: {}".format(provider.name,list(fake_plans.keys())))
                     db.insert_plans(conn, fake_plans.values())
                     plans.update(fake_plans)
-                if fake_plans:
-                    LOGGER.warning("Found provider {} with undocumented plans: {}".format(provider.name,fake_plans.keys()))
                 providers.append(provider)
             except Exception as e:
                 LOGGER.exception(e)
@@ -147,6 +146,7 @@ def pull_provider_fulldata(conn, issuers, plans, provider_url):
                 providers.clear()
                 if PARTIAL_DATA and i>500: break;
         db.insert_providers(conn, providers)
+        LOGGER.info("Finished Download of url: {}, size: {} Bytes".format(provider_url, file_size))
     except Exception as e:
         LOGGER.exception(e)
         LOGGER.warning("ERROR LOADING PROVIDER DATA FROM {}".format(provider_url))
@@ -178,6 +178,7 @@ def pull_formulary_fulldata(conn, issuers, plans, formulary_url):
                 drugs.clear()
                 if PARTIAL_DATA and i>500: break;
         db.insert_drugs(conn, drugs)
+        LOGGER.info("Finished Download of url: {}, size: {} Bytes".format(formulary_url, file_size))
     except Exception as e:
         LOGGER.exception(e)
         LOGGER.warning("ERROR LOADING DRUG DATA FROM {}".format(formulary_url))

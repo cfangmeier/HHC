@@ -68,7 +68,7 @@ def get_download_status(url, type_):
 
     matches = len(res)
     if matches != 1:
-        raise ValueError("Bad URL () Specified, matched {} rows in DB".format(url,matches))
+        raise ValueError("Bad URL {} Specified, matched {} rows in DB".format(url,matches))
     return res[0][0]
 
 
