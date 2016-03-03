@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 import io
-import os
 import json
 import logging
 import zipfile
 import argparse
 import collections
-import multiprocessing
-import concurrent.futures
-import urllib.request as request
+import multiprocessing as mp
 import urllib.parse as parse
+import urllib.request as request
+import cProfile
 
 import openpyxl
 
@@ -18,300 +17,273 @@ import models
 import db
 
 NULL_URL = "NOT SUBMITTED"
-LOGGER = logging.getLogger('main')
-ch = logging.FileHandler("main.log", mode='w')
-ch.setFormatter(logging.Formatter(fmt="%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
-LOGGER.addHandler(ch)
-
-PARTIAL_DATA = True
-
-DOWNLOAD_ATTEMPTS = 3
 
 
-def get_cms_spreadsheet(url):
-    parse_result = parse.urlparse(url)
-    if parse_result.scheme == "file":
-        LOGGER.info("Opening local CMS Spreadsheet from {}".format(parse_result.path))
-        nb = openpyxl.load_workbook(open(parse_result.path, 'rb'))
-    else: # Web URL
-        LOGGER.info("Pulling CMS Spreadsheet from {}".format(url))
-        with request.urlopen(url) as f:
-            b = io.BytesIO(f.read())
-        zf = zipfile.ZipFile(b)
-        fname = zf.namelist()[0]
-        nb = openpyxl.load_workbook(zf.open(fname))
-        LOGGER.info("Sucessfully pulled CMS Spreadsheet".format(url))
-    return nb.active
-
-def init_index_db(cms_url):
-    ws = get_cms_spreadsheet(cms_url)
-    issuer_groups = collections.defaultdict(list)
-    current_row = 1
-    LOGGER.info("BEGIN PARSING CMS SPREADSHEET")
-    while ws.cell(row=current_row+1, column=1).value:
-        current_row += 1
-        i = models.Issuer()
-        i.id_issuer            = ws.cell(row=current_row, column=3).value
-        i.name                 = ws.cell(row=current_row, column=4).value
-        i.marketplace_category = ws.cell(row=current_row, column=1).value
-        i.url_submitted        = ws.cell(row=current_row, column=5).value
-        i.state                = ws.cell(row=current_row, column=2).value.lower()
-        i.plans = []
-        url_submitted = ws.cell(row=current_row, column=5).value
-        if url_submitted == NULL_URL:
-            LOGGER.warning("Missing json url for Issuer: {}, {}".format(i.name, i.id_issuer))
-        LOGGER.info("Issuer Parsed: {}".format(i.name))
-        issuer_groups[url_submitted].append(i)
-    LOGGER.info("FINISH PARSING CMS SPREADSHEET")
-
-    group_objs = []
-    for url, issuers in issuer_groups.items():
-        issuer_group = models.IssuerGroup()
-        issuer_group.url_submitted = url
-        issuer_group.issuers = issuers
-        group_objs.append(issuer_group)
-    conn = db.create_index_db()
-    db.insert_issuer_groups(conn, group_objs)
-    return conn
-
-def pull_issuer_group_index(issuer_group):
-    if issuer_group.url_submitted == NULL_URL:
-        return issuer_group
-    LOGGER.info("PULLING JSON INDEX FOR ISSUER GROUP {} @ {}".format(issuer_group.idx_issuer_group,
-                                                                     issuer_group.url_submitted))
-    try:
-        with request.urlopen(issuer_group.url_submitted, timeout=20) as conn:
-            js = json.loads(conn.read().decode('utf8'))
-            issuer_group.plan_urls      = list(set(js['plan_urls']))
-            issuer_group.provider_urls  = list(set(js['provider_urls']))
-            issuer_group.formulary_urls = list(set(js['formulary_urls']))
-            issuer_group.url_status = "good"
-            LOGGER.info("FINISHED PULLING JSON INDEX FOR ISSUER GROUP {}".format(issuer_group.idx_issuer_group))
-    except Exception as e:
-        issuer_group.url_status = "bad"
-        LOGGER.exception(e)
-        LOGGER.error("FAILED TO LOAD JSON INDEX FOR ISSUER GROUP {} FROM URL \"{}\" ".format(issuer_group.idx_issuer_group, issuer_group.url_submitted, e))
-    return issuer_group
-
-def pull_plan_fulldata(conn, issuers, plan_url):
-    plans = {}
-    try:
-        json_objs = json_list_parser(plan_url)
-        for (bytes_read,file_size),plan_dict in json_objs:
-            try:
-                plan, fake_issuer = models.build_plan_from_dict(issuers, plan_dict)
-                if fake_issuer:
-                    LOGGER.warning("unknown issuer ID Specified {}".format(fake_issuer.id_issuer))
-                    db.insert_issuer(conn, fake_issuer)
-                    issuers[fake_issuer.id_issuer] = fake_issuer
-                if plan.id_plan in plans:
-                    LOGGER.warning("duplicate plan id: {}".format(plan.id_plan))
-                plans[plan.id_plan] = plan
-            except Exception as e:
-                LOGGER.exception(e)
-                LOGGER.info(plan_dict)
-                continue
-        db.insert_plans(conn, plans.values())
-        LOGGER.info("Finished Download of url: {}, size: {} Bytes".format(plan_url, file_size))
-    except Exception as e:
-        LOGGER.exception(e)
-        LOGGER.warning("ERROR LOADING PLAN DATA FROM {}".format(plan_url))
-    return plans, issuers
-
-def pull_provider_fulldata(conn, issuers, plans, provider_url):
-    try:
-        json_objs = json_list_parser(provider_url)
-        providers = []
-        for i,((bytes_read,file_size),provider_dict) in enumerate(json_objs):
-            try:
-                provider, fake_plans, fake_issuers = models.build_provider_from_dict(issuers, plans, provider_dict)
-                if fake_issuers:
-                    LOGGER.warning("Found provider {} with undocumented issuer: {}".format(provider.name,list(fake_issuers.keys())))
-                    db.insert_issuers(conn, fake_issuers.values())
-                    issuers.update(fake_issuers)
-                if fake_plans:
-                    LOGGER.warning("Found provider {} with undocumented plans: {}".format(provider.name,list(fake_plans.keys())))
-                    db.insert_plans(conn, fake_plans.values())
-                    plans.update(fake_plans)
-                providers.append(provider)
-            except Exception as e:
-                LOGGER.exception(e)
-                LOGGER.info(str(provider_dict))
-                continue
-            if((i%1000) == 0):
-                s = format_progress(bytes_read, file_size)
-                LOGGER.info("Downloaded {}".format(s))
-                LOGGER.info("Parsed {} Providers".format(i))
-                db.insert_providers(conn, providers)
-                providers.clear()
-                if PARTIAL_DATA and i>500: break;
-        db.insert_providers(conn, providers)
-        LOGGER.info("Finished Download of url: {}, size: {} Bytes".format(provider_url, file_size))
-    except Exception as e:
-        LOGGER.exception(e)
-        LOGGER.warning("ERROR LOADING PROVIDER DATA FROM {}".format(provider_url))
-
-def pull_formulary_fulldata(conn, issuers, plans, formulary_url):
-    try:
-        json_objs = json_list_parser(formulary_url)
-        drugs = []
-        for i,((bytes_read,file_size),drug_dict) in enumerate(json_objs):
-            try:
-                drug, fake_plans, fake_issuers = models.build_drug_from_dict(issuers, plans, drug_dict)
-                if fake_issuers:
-                    LOGGER.warning("Found drug {} with undocumented issuer: {}".format(drug.drug_name,list(fake_issuers.keys())))
-                    db.insert_issuers(conn, fake_issuers.values())
-                    issuers.update(fake_issuers)
-                if fake_plans:
-                    LOGGER.warning("Found drug {} with undocumented plans: {}".format(drug.drug_name,list(fake_plans.keys())))
-                    db.insert_plans(conn, fake_plans.values())
-                    plans.update(fake_plans)
-                drugs.append(drug)
-            except Exception as e:
-                LOGGER.exception(e)
-                continue
-            if((i%100) == 0):
-                s = format_progress(bytes_read, file_size)
-                LOGGER.info("Downloaded {}".format(s))
-                LOGGER.info("Parsed {} Drugs".format(i))
-                db.insert_drugs(conn, drugs)
-                drugs.clear()
-                if PARTIAL_DATA and i>500: break;
-        db.insert_drugs(conn, drugs)
-        LOGGER.info("Finished Download of url: {}, size: {} Bytes".format(formulary_url, file_size))
-    except Exception as e:
-        LOGGER.exception(e)
-        LOGGER.warning("ERROR LOADING DRUG DATA FROM {}".format(formulary_url))
-
-def init_full_pull_logger(id_issuer):
-    global LOGGER
-    LOGGER = logging.Logger("FULLPULL:"+str(id_issuer))
-    log_name = os.path.join("db","{}.log".format(id_issuer))
+def init_logger(logger_name):
+    logger = logging.Logger(logger_name)
+    log_name = "{}.log".format(logger_name)
     ch = logging.FileHandler(log_name, mode='w')
-    ch.setFormatter(logging.Formatter(fmt="%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
-    LOGGER.addHandler(ch)
+    fmt = "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
+    ch.setFormatter(logging.Formatter(fmt=fmt))
+    logger.addHandler(ch)
+    return logger
 
-def pull_issuer_group_fulldata(args):
-    issuer_group, issuers_all = args
-    init_full_pull_logger(issuer_group.idx_issuer_group)
-    conn = db.init_issuer_group_db(issuer_group.idx_issuer_group)
-    for issuer in issuer_group.issuers:
-        db.insert_issuer(conn, issuer)
-    LOGGER.info("PULLING FULLDATA FOR ISSUER GROUP {}".format(issuer_group.idx_issuer_group))
-    LOGGER.info("WITH ISSUERS {}".format([i.id_issuer for i in issuer_group.issuers]))
-    plans = {}
 
-    LOGGER.info("BEGIN PULLING PLAN DATA")
-    for plan_url in issuer_group.plan_urls:
-        if db.get_download_status(issuer_group, plan_url, 'plan') != 'finished':
-            for attempt in range(DOWNLOAD_ATTEMPTS):
-                LOGGER.info("PULLING PLAN PAGE AT {}".format(plan_url))
-                LOGGER.info("\tATTEMPT {} of {}".format(attempt+1, DOWNLOAD_ATTEMPTS))
+class Downloader:
+    url_limit = 10
+    data_limit = 50
+    download_attempts = 3
+
+    def __init__(self, issuer_group, queue, label):
+        self.issuer_group = issuer_group
+        self.q = queue
+        self.logger = init_logger("DL_{}".format(label))
+
+    def run(self):
+        log = self.logger
+        success = self._download_index()
+        if not success:
+            return
+
+        data_urls = self.issuer_group.data_urls
+        if self.url_limit:
+            data_urls = data_urls[:self.url_limit]
+        n = len(data_urls)
+        for i, url in enumerate(data_urls):
+            log.info("Downloading from URL {}/{}".format(i+1, n))
+            if url.url_type == models.URLType.plan:
+                success = self._download_objects(url.url, models.Plan)
+            elif url.url_type == models.URLType.drug:
+                success = self._download_objects(url.url, models.Drug)
+            elif url.url_type == models.URLType.prov:
+                success = self._download_objects(url.url, models.Provider)
+
+
+    def _download_index(self):
+        log = self.logger
+        iss_grp = self.issuer_group
+        if iss_grp.index_url == NULL_URL:
+            return
+        log.info("Pulling JSON index from \"{}\"".format(iss_grp.index_url))
+        try:
+            with request.urlopen(iss_grp.index_url, timeout=20) as conn:
+                js = json.loads(conn.read().decode('utf8'))
+                iss_grp.data_urls = ([models.IssuerURL(url, models.URLType.plan, 'n/a')
+                                      for url in js['plan_urls']] +
+                                     [models.IssuerURL(url, models.URLType.prov, 'n/a')
+                                      for url in js['provider_urls']] +
+                                     [models.IssuerURL(url, models.URLType.drug, 'n/a')
+                                      for url in js['formulary_urls']])
+
+                iss_grp.url_status = "good"
+                log.info("Finished pulling JSON index from URL \"{}\"".format(iss_grp.index_url))
+                self.q.put(iss_grp)
+                return True
+        except Exception as e:
+            iss_grp.url_status = "bad"
+            log.exception(e)
+            log.error("Failed to load JSON index from URL \"{}\"".format(iss_grp.index_url))
+            self.q.put(iss_grp)
+            return False
+
+    def _download_objects(self, url, class_):
+        log = self.logger
+
+        def status(bytes_read, file_size, i):
+            s = format_progress(bytes_read, file_size)
+            log.info("Downloaded {}".format(s))
+            log.info("Parsed {} data objects".format(i))
+
+        try:
+            json_objs = json_list_parser(url)
+            for i, ((bytes_read, file_size), obj_dict) in enumerate(json_objs):
                 try:
-                    plans_url, issuers_all = pull_plan_fulldata(conn, issuers_all.copy(), plan_url)
-                    plans.update(plans_url)
-                    conn.commit()
-                    db.update_download_status(issuer_group, plan_url, 'plan', 'finished')
-                except TimeoutError:
-                    LOGGER.error("TIMEOUT WHILE DOWNLOADING FILE")
-                    conn.rollback()
+                    obj = class_(obj_dict)
+                    self.q.put(obj)
+                except Exception as e:
+                    log.exception(e)
+                    log.info(obj_dict)
                     continue
+                if i > 0 and ((i % 1000) == 0):
+                    status(bytes_read, file_size, i)
+                if self.data_limit and i > self.data_limit:
+                    log.info("Hit data limit, breaking...")
+                    status(bytes_read, file_size, i)
+                    break
+            log.info("Finished download of url: {}, size: {} bytes".format(url, file_size))
+            return True
+        except Exception as e:
+            log.exception(e)
+            log.warning("Error loading data from {}".format(url))
+            return False
+
+
+class Consumer:
+    def __init__(self, queue, label="CS"):
+        self.logger = init_logger("DL_{}".format(label))
+        self.q = queue
+        self.conn = db.init_db()
+
+    def _process_issuer_group(self, issuer_group):
+        conn = self.conn
+        idx = db.insert_issuer_group(conn, issuer_group)
+        for issuer in issuer_group.issuers:
+            db.insert_issuer(conn, issuer, idx)
+        for url in issuer_group.data_urls:
+            db.insert_data_url(conn, url, idx)
+        conn.commit()
+
+    def _process_url(self, url):
+        pass
+
+    def _process_plan(self, plan):
+        pass
+
+    def _process_prov(self, prov):
+        pass
+
+    def _process_drug(self, drug):
+        pass
+
+    def run(self):
+        map_ = {models.IssuerGroup: self._process_issuer_group,
+                models.IssuerURL:   self._process_url,
+                models.Provider:    self._process_prov,
+                models.Plan:        self._process_plan,
+                models.Drug:        self._process_drug}
+        while True:
+            obj = self.q.get()
+            if obj == "QUIT":
+                self.conn.close()
                 break
-            else:
-                db.update_download_status(issuer_group, plan_url, 'plan', 'error')
-    LOGGER.info("PULLED {} PLANS".format(len(plans)))
-
-    LOGGER.info("BEGIN PULLING FORMULARY DATA")
-    n = len(issuer_group.formulary_urls)
-    for i, formulary_url in enumerate(issuer_group.formulary_urls):
-        if db.get_download_status(issuer_group, formulary_url, 'formulary') != 'finished':
-            for attempt in range(DOWNLOAD_ATTEMPTS):
-                LOGGER.info("Pulling formulary page {} of {} at {}".format(i+1, n, formulary_url))
-                LOGGER.info("\tAttempt {} of {}".format(attempt+1, DOWNLOAD_ATTEMPTS))
-                try:
-                    pull_formulary_fulldata(conn, issuers_all, plans, formulary_url)
-                    conn.commit()
-                    db.update_download_status(issuer_group, formulary_url, 'formulary', 'finished')
-                except TimeoutError:
-                    LOGGER.error("TIMEOUT WHILE DOWNLOADING FILE")
-                    conn.rollback()
-                    continue
-                break
-            else:
-                db.update_download_status(issuer_group, formulary_url, 'formulary', 'error')
-    LOGGER.info("FINISHED PULLING FORMULARY DATA")
-
-    LOGGER.info("BEGIN PULLING PROVIDER DATA")
-    n = len(issuer_group.provider_urls)
-    for i, provider_url in enumerate(issuer_group.provider_urls):
-        if db.get_download_status(issuer_group, provider_url, 'provider') != 'finished':
-            for attempt in range(DOWNLOAD_ATTEMPTS):
-                LOGGER.info("Pulling provider page {} of {} at {}".format(i+1, n, provider_url))
-                LOGGER.info("\tAttempt {} of {}".format(attempt+1, DOWNLOAD_ATTEMPTS))
-                try:
-                    pull_provider_fulldata(conn, issuers_all, plans, provider_url)
-                    conn.commit()
-                    db.update_download_status(issuer_group, provider_url, 'provider', 'finished')
-                except TimeoutError:
-                    LOGGER.error("TIMEOUT WHILE DOWNLOADING FILE")
-                    conn.rollback()
-                    continue
-                break
-            else:
-                db.update_download_status(issuer_group, provider_url, 'provider', 'error')
-    LOGGER.info("FINISHED PULLING PROVIDER DATA")
+            # self.logger.info(obj)
+            map_[type(obj)](obj)
 
 
-    conn.close()
-    LOGGER.info("FINISHED PULLING FULLDATA")
+def consume(q):
+    consumer = Consumer(q)
+    consumer.run()
 
-def pull_issuer_groups_fulldata(requested_ids, requested_states, processes):
-    conn = db.open_index_db()
-    groups = db.query_requested_groups(conn, requested_ids, requested_states)
-    for group in groups:
-        db.query_issuer_group_issuers(conn,group)
-        db.query_issuer_group_urls(conn,group)
-    LOGGER.info("PULLING DATA FOR ISSUER GROUPS")
-    for group in groups:
-        LOGGER.info("ISSUER GROUP ID: {}".format(group.idx_issuer_group))
-        for issuer in group.issuers:
-            LOGGER.info("\tISSUER ID: {}".format(issuer.id_issuer))
-    issuers = {i.id_issuer:i for i in db.query_issuers(conn)}
-    groups = [(g,issuers) for g in groups]
-    conn.close()
-    with multiprocessing.Pool(processes) as p:
-        p.map(pull_issuer_group_fulldata, groups)
 
-def pull_issuers_metadata(cms_url, requested_ids, requested_states):
-    conn = init_index_db(cms_url)
-    groups = db.query_requested_groups(conn, requested_ids, requested_states)
+def produce(args):
+    issuer_group, label = args
+    producer = Downloader(issuer_group, produce.q, label)
+    cProfile.runctx("producer.run()", globals(), locals(),
+                    "prof_results.txt")
+    # producer.run()
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
-        futures = [executor.submit(pull_issuer_group_index, group) for group in groups]
-        for future in concurrent.futures.as_completed(futures):
-            issuer_group = future.result()
-            db.insert_issuer_group_urls(conn, issuer_group)
-    conn.close()
+
+def init_produce(q):
+    produce.q = q
+
+
+class Manager:
+    def __init__(self, cms_url, filters, num_processes=10):
+        self.logger = init_logger("MANAGER")
+        self.cms_url = cms_url
+        self.requested_issuer_ids = filters['issuer_ids']
+        self.requested_states = filters['states']
+        self.num_processes = num_processes
+
+    def _apply_filters(self):
+        log = self.logger
+        ids = self.requested_issuer_ids
+        states = self.requested_states
+        if ids:
+            log.info("Filtering on ids: {}".format(ids))
+        else:
+            log.info("No ids specified, keeping all.")
+        if states:
+            log.info("Filtering on states: {}".format(ids))
+        else:
+            log.info("No states specified, keeping all.")
+
+        def filt(issuers):
+            return [i for i in issuers
+                    if ((not states or i.state in states) and
+                        (not ids or i.id_issuer in ids))]
+        grp_filt = [group
+                    for group in self.issuer_groups if filt(group.issuers)]
+        log.info("After filtering, will download the following groups:")
+        for i, grp in enumerate(grp_filt):
+            log.info("Group #{}, index-url: \"{}\"".format(i, grp.index_url))
+            iss_ids = [iss.id_issuer for iss in grp.issuers]
+            log.info("\tWith Issuers: {}".format(iss_ids))
+        self.issuer_groups = grp_filt
+
+    def _find_issuer_groups(self):
+        log = self.logger
+        parse_result = parse.urlparse(self.cms_url)
+        if parse_result.scheme == "file":
+            log.info("Opening local CMS Spreadsheet from {}".format(parse_result.path))
+            nb = openpyxl.load_workbook(open(parse_result.path, 'rb'))
+        else:  # Web URL
+            log.info("Pulling CMS Spreadsheet from {}".format(self.cms_url))
+            with request.urlopen(self.cms_url) as f:
+                b = io.BytesIO(f.read())
+            zf = zipfile.ZipFile(b)
+            fname = zf.namelist()[0]
+            nb = openpyxl.load_workbook(zf.open(fname))
+            log.info("Sucessfully pulled CMS Spreadsheet".format(self.cms_url))
+
+        issuer_groups = collections.OrderedDict()
+        current_row = 1
+        log.info("BEGIN PARSING CMS SPREADSHEET")
+        ws = nb.active
+        while ws.cell(row=current_row+1, column=1).value:
+            current_row += 1
+            i = models.Issuer()
+            i.state = ws.cell(row=current_row, column=1).value.lower()
+            i.id_issuer = ws.cell(row=current_row, column=2).value
+            i.name = ws.cell(row=current_row, column=3).value
+            index_url = ws.cell(row=current_row, column=4).value
+            if index_url == NULL_URL:
+                log.warning("Missing JSON url for Issuer: {}, {}".format(i.name, i.id_issuer))
+            log.info("Issuer Parsed: {}".format(i.name))
+            if index_url not in issuer_groups:
+                issuer_groups[index_url] = []
+            issuer_groups[index_url].append(i)
+        log.info("FINISH PARSING CMS SPREADSHEET")
+
+        group_objs = []
+        for url, issuers in issuer_groups.items():
+            issuer_group = models.IssuerGroup()
+            issuer_group.index_url = url
+            issuer_group.issuers = issuers
+            group_objs.append(issuer_group)
+        self.issuer_groups = group_objs
+
+    def run(self):
+        self._find_issuer_groups()
+        self._apply_filters()
+        q = mp.Queue()
+        consume_proc = mp.Process(target=consume, args=(q,))
+        consume_proc.start()
+        pool = mp.Pool(self.num_processes, init_produce, [q])
+        pool.map(produce, [(grp, str(i))
+                           for i, grp in enumerate(self.issuer_groups)])
+        q.put("QUIT")
+        consume_proc.join()
+
 
 def main():
     parser = argparse.ArgumentParser(description="Utility to Download Insurance Acceptance Data")
     add = parser.add_argument
     add('--cmsurl', default="http://download.cms.gov/marketplace-puf/2016/machine-readable-url-puf.zip",
-            help = "the url to \"machine-readable-url-puf.zip\", or the path to \"Machine_Readable_PUF_*.xlsx\" in the form \"file:/path/to/file\"")
-    add('--issuer_ids', default = None, nargs='+', type=int,
-            help="Specify specific issuers to do fulldata pull on")
-    add('--states', default = None, nargs='+', type=str,
-            help="Specify a list of specific states to download fulldata on")
-    add('--processes', default = 1, type=int,
-            help="Set the number of processes to use in the full data pull")
-    add('action', choices=['init','download', 'all'],
-            help="Action to undertake")
+        help= ("the url to \"machine-readable-url-puf.zip\", or the path "
+               "to \"Machine_Readable_PUF_*.xlsx\" in the form \"file:/path/to/file\""))
+    add('--issuerids', default=None, nargs='+', type=int,
+        help="Specify specific issuers to do fulldata pull on")
+    add('--states', default=None, nargs='+', type=str,
+        help="Specify a list of specific states to download fulldata on")
+    add('--processes', default=1, type=int,
+        help="Set the number of processes to use in the full data pull")
     args = parser.parse_args()
 
-    if args.action in ('init', 'all'):
-        pull_issuers_metadata(args.cmsurl, args.issuer_ids, args.states)
-    if args.action in ('download', 'all'):
-        pull_issuer_groups_fulldata(args.issuer_ids, args.states, args.processes)
+    filters = {'issuer_ids': args.issuerids,
+               'states': args.states}
+    manager = Manager(args.cmsurl, filters, args.processes)
+    manager.run()
 
 
 if __name__ == "__main__":

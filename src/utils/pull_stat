@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+echo "Download Speed" $(bmon -o ascii:quitafter=2 -penp3s0 | tail -n1 | sed "s/[ ]\+/\t/g" | cut -f3)
+ls -lht *.sqlite3  | head -n20
+echo ""
+ls -lhS *.log | head -n10 
+echo "Started:  " $(ls *.log | wc -l)
+echo "Finished: " $(tail *.log | grep "FINISHED PULLING FULLDATA" | wc -l)
+echo "Total DB size: " $(du -h | cut  -f1)
+bytes=$(grep "Finished Download" *.log | cut -d' ' -f11 | paste -sd+ | bc)
+echo "Total Downloaded: $bytes bytes, " $(echo "$bytes/1024./1024/1024"|bc) "GB"

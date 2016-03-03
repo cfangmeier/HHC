@@ -1,20 +1,22 @@
-from io import TextIOWrapper
+import io
+import os
+import json
 from datetime import datetime
 import urllib.request as request
 import urllib.parse as parse
-import json
 
 _DECODER = json.JSONDecoder()
 
 _DEFAULT_CHUNK_SIZE = 4096
 _MB = (1024 * 1024)
 _LARGEST_JSON_OBJECT_ACCEPTED = 16 * _MB  # default to 16 megabytes
-_DEFAULT_TIMEOUT = 20 # seconds
+_DEFAULT_TIMEOUT = 20  # seconds
 
 _VERBOSE = False
 
+
 def _get_file_size(stream):
-    if type(stream) == TextIOWrapper:
+    if type(stream) == io.TextIOWrapper:
         file_size = os.stat(stream.name).st_size
     else:
         file_size = stream.info().get('Content-Length')
@@ -24,19 +26,23 @@ def _get_file_size(stream):
             file_size = -1
     return file_size
 
+
 def _open_stream(url, timeout):
     parse_result = parse.urlparse(url)
     if parse_result.scheme == "file":
-        return open(parse_result.path,'r')
+        return open(parse_result.path, 'r')
     else:
         return request.urlopen(url, timeout=timeout)
 
 last_time = datetime.now()
 last_bytes = 0
+
+
 def format_progress(downloaded, total):
     global last_time, last_bytes
     from math import log2, floor
-    if(downloaded < last_bytes): last_bytes = 0
+    if(downloaded < last_bytes):
+        last_bytes = 0
     suffixes = ['bytes', 'kB', 'MB', 'GB', 'TB']
 
     now = datetime.now()
@@ -55,17 +61,16 @@ def format_progress(downloaded, total):
         dl_speed /= 2**(suf_idx*10)
 
         progress = downloaded/total * 100 if total > 0 else -1
-        s = "({:.2f}{}/{:.2f}{}),({:.2f}{}) {:.2f}%".format(downloaded, suffix, total, suffix,
-                                                            dl_speed, dl_suffix, progress)
+        fmt = "({:.2f}{}/{:.2f}{}),({:.2f}{}) {:.2f}%"
+        s = fmt.format(downloaded, suffix, total, suffix,
+                       dl_speed, dl_suffix, progress)
         return s
     except ValueError:
         return ""
-        
-
 
 
 def json_list_parser(url,
-                     timeout = _DEFAULT_TIMEOUT,
+                     timeout=_DEFAULT_TIMEOUT,
                      chunk_size=_DEFAULT_CHUNK_SIZE,
                      max_size=_LARGEST_JSON_OBJECT_ACCEPTED):
     """
@@ -76,6 +81,7 @@ def json_list_parser(url,
     file_size = _get_file_size(stream)
 
     bytes_read = 0
+
     def read(num_chars):
         nonlocal bytes_read
         try:
@@ -88,17 +94,16 @@ def json_list_parser(url,
             s = s.decode('utf8')
         return s.lstrip()
 
-    #Seek to the opening bracket of the data list
+    # Seek to the opening bracket of the data list
     while True:
         c = read(1)
-        if c == '[': break
-
+        if c == '[':
+            break
     buf = ''
     while True:
         temp = read(chunk_size)
         if not temp:
             break
-
         # The decoder is confused by leading white space before an object.
         # So, strip any leading white space if any.
         buf += temp
@@ -113,44 +118,30 @@ def json_list_parser(url,
                     # Look for a following comma, indicating there is another
                     # entry in the list.
                     i = buf.find(',')
-                    yield (bytes_read,file_size),x
+                    yield (bytes_read, file_size), x
                     if i == -1:
                         raise StopIteration()
                     buf = buf[i+1:].lstrip()
-
+                else:  # Wrong data type, someone's not keeping to spec!
+                    raise ValueError("JSON file contains incorrect datatypes!")
             except ValueError:
                 if len(buf) >= max_size:
-                    raise ValueError("either bad input or too-large JSON object.")
+                    msg = "either bad input or too-large JSON object."
+                    raise ValueError(msg)
                 break
     buf = buf.strip()
     if buf:
         if len(buf) > 70:
             buf = buf[:70] + '...'
-        raise ValueError('Leftover stuff from input: "{}"\nLast object:\n{}'.format(buf,X))
+        msg = "Leftover stuff from input: \"{}\"\nLast object:\n{}"
+        raise ValueError(msg.format(buf, x))
 
-if __name__=="__main__":
-    import os
+
+if __name__ == "__main__":
     import sys
-    import re
-    url_regex = re.compile(
-                r'^(?:http|ftp)s?://' # http:// or https://
-                r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|' #domain...
-                r'localhost|' #localhost...
-                r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})' # ...or ip
-                r'(?::\d+)?' # optional port
-                r'(?:/?|[/?]\S+)$', re.IGNORECASE)
-    if url_regex.fullmatch(sys.argv[1]) is not None:
-        f = request.urlopen(sys.argv[1], timeout=20)
-        get_file_size(f)
-        print("Downloading plan json\n\tFile Size: {}Bytes".format(file_size))
-    else:
-        f = open(sys.argv[1],'r')
-        get_file_size(f)
-        print("Opening plan json\n\tFile Size: {}Bytes".format(file_size))
-    parser = json_list_parser(f, file_size)
+    parser = json_list_parser(sys.argv[1])
 
-    for (bytes_read,file_size),obj in parser:
-        print("\nREAD ({}/{}) BYTES".format(bytes_read,file_size))
+    for (bytes_read, file_size), obj in parser:
+        print("\nREAD ({}/{}) BYTES".format(bytes_read, file_size))
         print(obj)
         input()
-
