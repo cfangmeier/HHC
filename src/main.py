@@ -8,11 +8,10 @@ import collections
 import multiprocessing as mp
 import urllib.parse as parse
 import urllib.request as request
-import cProfile
 
 import openpyxl
 
-from json_list_parser import json_list_parser, format_progress
+from json_list_parser import json_list_parser, download_formatter
 import models
 import db
 
@@ -31,17 +30,25 @@ def init_logger(logger_name):
 
 class Downloader:
     url_limit = 10
-    data_limit = 50
+    data_limit = 500
     download_attempts = 3
 
     def __init__(self, issuer_group, queue, label):
         self.issuer_group = issuer_group
+        self.issuer_group.idx_issuer_group = label
+        for issuer in self.issuer_group.issuers:
+            issuer.idx_issuer_group = label
         self.q = queue
         self.logger = init_logger("DL_{}".format(label))
 
     def run(self):
         log = self.logger
         success = self._download_index()
+        status = "finished" if success else "failed"
+        self.issuer_group.index_status = status
+        self.q.put(self.issuer_group)
+        for issuer in self.issuer_group.issuers:
+            self.q.put(issuer)
         if not success:
             return
 
@@ -57,43 +64,44 @@ class Downloader:
                 success = self._download_objects(url.url, models.Drug)
             elif url.url_type == models.URLType.prov:
                 success = self._download_objects(url.url, models.Provider)
-
+            url.status = "finished" if success else "failed"
+            self.q.put(url)
 
     def _download_index(self):
         log = self.logger
         iss_grp = self.issuer_group
+        idx = iss_grp.idx_issuer_group
         if iss_grp.index_url == NULL_URL:
             return
         log.info("Pulling JSON index from \"{}\"".format(iss_grp.index_url))
         try:
             with request.urlopen(iss_grp.index_url, timeout=20) as conn:
                 js = json.loads(conn.read().decode('utf8'))
-                iss_grp.data_urls = ([models.IssuerURL(url, models.URLType.plan, 'n/a')
-                                      for url in js['plan_urls']] +
-                                     [models.IssuerURL(url, models.URLType.prov, 'n/a')
-                                      for url in js['provider_urls']] +
-                                     [models.IssuerURL(url, models.URLType.drug, 'n/a')
-                                      for url in js['formulary_urls']])
+                plans = [models.IssuerGroupURL(idx, url, models.URLType.plan)
+                         for url in js['plan_urls']]
+                provs = [models.IssuerGroupURL(idx, url, models.URLType.prov)
+                         for url in js['provider_urls']]
+                drugs = [models.IssuerGroupURL(idx, url, models.URLType.drug)
+                         for url in js['formulary_urls']]
+                iss_grp.data_urls = (plans+provs+drugs)
 
-                iss_grp.url_status = "good"
-                log.info("Finished pulling JSON index from URL \"{}\"".format(iss_grp.index_url))
-                self.q.put(iss_grp)
+                fmt = "Finished pulling JSON index from URL \"{}\""
+                log.info(fmt.format(iss_grp.index_url))
                 return True
         except Exception as e:
-            iss_grp.url_status = "bad"
             log.exception(e)
-            log.error("Failed to load JSON index from URL \"{}\"".format(iss_grp.index_url))
-            self.q.put(iss_grp)
+            fmt = "Failed to load JSON index from URL \"{}\""
+            log.error(fmt.format(iss_grp.index_url))
             return False
 
     def _download_objects(self, url, class_):
         log = self.logger
+        formatter = download_formatter()
 
         def status(bytes_read, file_size, i):
-            s = format_progress(bytes_read, file_size)
+            s = formatter(bytes_read, file_size)
             log.info("Downloaded {}".format(s))
             log.info("Parsed {} data objects".format(i))
-
         try:
             json_objs = json_list_parser(url)
             for i, ((bytes_read, file_size), obj_dict) in enumerate(json_objs):
@@ -110,7 +118,8 @@ class Downloader:
                     log.info("Hit data limit, breaking...")
                     status(bytes_read, file_size, i)
                     break
-            log.info("Finished download of url: {}, size: {} bytes".format(url, file_size))
+            fmt = "Finished download of url: {}, size: {} MB"
+            log.info(fmt.format(url, file_size/2**20))
             return True
         except Exception as e:
             log.exception(e)
@@ -124,40 +133,81 @@ class Consumer:
         self.q = queue
         self.conn = db.init_db()
 
+        # Declare a few auxillary lookup tables
+        self.provs = {}  # maps npi to idx_provider
+        self.drugs = {}  # maps rx_norm_id to idx_drug
+
     def _process_issuer_group(self, issuer_group):
-        conn = self.conn
-        idx = db.insert_issuer_group(conn, issuer_group)
-        for issuer in issuer_group.issuers:
-            db.insert_issuer(conn, issuer, idx)
-        for url in issuer_group.data_urls:
-            db.insert_data_url(conn, url, idx)
-        conn.commit()
+        id_ = issuer_group.idx_issuer_group
+        self.logger.info("Inserting Issuer Group: {}".format(id_))
+        db.insert_issuer_group(self.conn, issuer_group)
 
     def _process_url(self, url):
-        pass
+        self.logger.info("Inserting URL: {}".format(url))
+        db.insert_data_url(self.conn, url)
+
+    def _process_issuer(self, issuer):
+        self.logger.info("Inserting Issuer: {}".format(issuer.id_issuer))
+        db.insert_issuer(self.conn, issuer)
 
     def _process_plan(self, plan):
-        pass
+        self.logger.info("Inserting Plan: {}".format(plan.marketing_name))
+        db.insert_plan(self.conn, plan)
 
-    def _process_prov(self, prov):
-        pass
+    def _process_provider(self, prov):
+        conn = self.conn
+        log = self.logger
+        log.info("Inserting Provider: {},{}".format(prov.npi, prov.name))
+        if not prov.npi:
+            return
+        if prov.npi not in self.provs:
+            self.provs[prov.npi] = db.insert_provider(conn, prov)
+        idx_prov = self.provs[prov.npi]
+
+        for language in prov.languages:
+            db.insert_language(conn, language, idx_prov)
+        for specialty in prov.specialties:
+            db.insert_specialty(conn, specialty, idx_prov)
+        for facility_type in prov.facility_types:
+            db.insert_facility_type(conn, facility_type, idx_prov)
+        for address in prov.addresses:
+            db.insert_address(conn, address, idx_prov)
+        for plan in prov.plans:
+            db.insert_provider_plan(conn, plan, idx_prov)
 
     def _process_drug(self, drug):
-        pass
+        conn = self.conn
+        log = self.logger
+        log.info("Inserting Drug: {}".format(drug.name))
+        if not drug.rxnorm_id:
+            return
+        if drug.rxnorm_id not in self.drugs:
+            self.drugs[drug.rxnorm_id] = db.insert_drug(conn, drug)
+        idx_drug = self.drugs[drug.rxnorm_id]
+        for plan in drug.plans:
+            db.insert_drug_plan(conn, plan, idx_drug)
 
     def run(self):
-        map_ = {models.IssuerGroup: self._process_issuer_group,
-                models.IssuerURL:   self._process_url,
-                models.Provider:    self._process_prov,
-                models.Plan:        self._process_plan,
-                models.Drug:        self._process_drug}
+        log = self.logger
+        map_ = {models.IssuerGroup:      self._process_issuer_group,
+                models.IssuerGroupURL:   self._process_url,
+                models.Issuer:           self._process_issuer,
+                models.Provider:         self._process_provider,
+                models.Plan:             self._process_plan,
+                models.Drug:             self._process_drug}
         while True:
             obj = self.q.get()
             if obj == "QUIT":
+                log.info("Consumer received quit signal. closing db...")
                 self.conn.close()
                 break
-            # self.logger.info(obj)
-            map_[type(obj)](obj)
+            else:
+                try:
+                    map_[type(obj)](obj)
+                    self.conn.commit()
+                except Exception as e:
+                    log.exception(e)
+                    self.conn.rollback()
 
 
 def consume(q):
@@ -168,9 +218,7 @@ def consume(q):
 def produce(args):
     issuer_group, label = args
     producer = Downloader(issuer_group, produce.q, label)
-    cProfile.runctx("producer.run()", globals(), locals(),
-                    "prof_results.txt")
-    # producer.run()
+    producer.run()
 
 
 def init_produce(q):
@@ -194,7 +242,7 @@ class Manager:
         else:
             log.info("No ids specified, keeping all.")
         if states:
-            log.info("Filtering on states: {}".format(ids))
+            log.info("Filtering on states: {}".format(states))
         else:
             log.info("No states specified, keeping all.")
 
@@ -215,7 +263,8 @@ class Manager:
         log = self.logger
         parse_result = parse.urlparse(self.cms_url)
         if parse_result.scheme == "file":
-            log.info("Opening local CMS Spreadsheet from {}".format(parse_result.path))
+            fmt = "Opening local CMS Spreadsheet from {}"
+            log.info(fmt.format(parse_result.path))
             nb = openpyxl.load_workbook(open(parse_result.path, 'rb'))
         else:  # Web URL
             log.info("Pulling CMS Spreadsheet from {}".format(self.cms_url))
@@ -238,7 +287,8 @@ class Manager:
             i.name = ws.cell(row=current_row, column=3).value
             index_url = ws.cell(row=current_row, column=4).value
             if index_url == NULL_URL:
-                log.warning("Missing JSON url for Issuer: {}, {}".format(i.name, i.id_issuer))
+                fmt = "Missing JSON url for Issuer: {}, {}"
+                log.warning(fmt.format(i.name, i.id_issuer))
             log.info("Issuer Parsed: {}".format(i.name))
             if index_url not in issuer_groups:
                 issuer_groups[index_url] = []
@@ -260,18 +310,22 @@ class Manager:
         consume_proc = mp.Process(target=consume, args=(q,))
         consume_proc.start()
         pool = mp.Pool(self.num_processes, init_produce, [q])
-        pool.map(produce, [(grp, str(i))
+        pool.map(produce, [(grp, i)
                            for i, grp in enumerate(self.issuer_groups)])
         q.put("QUIT")
         consume_proc.join()
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Utility to Download Insurance Acceptance Data")
+    desc = "Utility to Download Insurance Acceptance Data"
+    parser = argparse.ArgumentParser(description=desc)
     add = parser.add_argument
-    add('--cmsurl', default="http://download.cms.gov/marketplace-puf/2016/machine-readable-url-puf.zip",
-        help= ("the url to \"machine-readable-url-puf.zip\", or the path "
-               "to \"Machine_Readable_PUF_*.xlsx\" in the form \"file:/path/to/file\""))
+    urlhelp = ("the url to \"machine-readable-url-puf.zip\", or the path "
+               "to \"Machine_Readable_PUF_*.xlsx\" in the form "
+               "\"file:/path/to/file\"")
+    urldefault = ("http://download.cms.gov/marketplace-puf/2016/"
+                  "machine-readable-url-puf.zip")
+    add('--cmsurl', default=urldefault, help=urlhelp)
     add('--issuerids', default=None, nargs='+', type=int,
         help="Specify specific issuers to do fulldata pull on")
     add('--states', default=None, nargs='+', type=str,

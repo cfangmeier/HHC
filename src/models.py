@@ -54,14 +54,16 @@ class URLType(IntEnum):
 
 class IssuerGroup:
     def __init__(self):
-        self.index_url = ""
-        self.index_status = ""
+        self.idx_issuer_group = None
+        self.index_url = None
+        self.index_status = None
         self.issuers = []
         self.data_urls = []
 
 
-class IssuerURL:
-    def __init__(self, url, url_type, status=""):
+class IssuerGroupURL:
+    def __init__(self, idx, url, url_type, status=""):
+        self.idx_issuer_group = idx
         self.url = url
         self.url_type = url_type
         self.status = status
@@ -69,7 +71,8 @@ class IssuerURL:
 
 class Issuer:
     def __init__(self):
-        self.id_issuer = -1
+        self.idx_issuer_group = None
+        self.id_issuer = None
         self.name = None
         self.state = None
 
@@ -89,7 +92,6 @@ class Plan:
 
 
 class Address():
-
     def __init__(self, addr_dict=None):
         def f(s):
             if s is not None:
@@ -170,11 +172,11 @@ class Drug:
     def __init__(self, drug_dict=None):
         if drug_dict is None:
             self.rxnorm_id = None
-            self.drug_name = None
+            self.name = None
             self.plans = None
         else:
             self.rxnorm_id = drug_dict.get('rxnorm_id')
-            self.drug_name = drug_dict.get('drug_name')
+            self.name = drug_dict.get('drug_name')
             self.plans = [DrugPlan(drugplan_dict)
                           for drugplan_dict in drug_dict.get('plans', [])]
 

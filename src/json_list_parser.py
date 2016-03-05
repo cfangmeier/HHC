@@ -34,39 +34,37 @@ def _open_stream(url, timeout):
     else:
         return request.urlopen(url, timeout=timeout)
 
-last_time = datetime.now()
-last_bytes = 0
 
-
-def format_progress(downloaded, total):
-    global last_time, last_bytes
+def download_formatter():
     from math import log2, floor
-    if(downloaded < last_bytes):
-        last_bytes = 0
+    last_time = datetime.now()
+    last_bytes = 0
     suffixes = ['bytes', 'kB', 'MB', 'GB', 'TB']
 
-    now = datetime.now()
-    dl_speed = 10**6*(downloaded-last_bytes)/(now-last_time).microseconds
-    last_bytes = downloaded
-    last_time = now
+    def f(downloaded, file_size):
+        nonlocal last_bytes, last_time
+        now = datetime.now()
+        dl_speed = 10**6*(downloaded-last_bytes)/(now-last_time).microseconds
+        last_bytes = downloaded
+        last_time = now
+        try:
+            suf_idx = floor(log2(file_size)/10)
+            suffix = suffixes[suf_idx]
+            downloaded /= 2**(suf_idx*10)
+            file_size /= 2**(suf_idx*10)
 
-    try:
-        suf_idx = floor(log2(total)/10)
-        suffix = suffixes[suf_idx]
-        downloaded /= 2**(suf_idx*10)
-        total /= 2**(suf_idx*10)
+            suf_idx = floor(log2(dl_speed)/10)
+            dl_suffix = suffixes[suf_idx]+'/s'
+            dl_speed /= 2**(suf_idx*10)
 
-        suf_idx = floor(log2(dl_speed)/10)
-        dl_suffix = suffixes[suf_idx]+'/s'
-        dl_speed /= 2**(suf_idx*10)
-
-        progress = downloaded/total * 100 if total > 0 else -1
-        fmt = "({:.2f}{}/{:.2f}{}),({:.2f}{}) {:.2f}%"
-        s = fmt.format(downloaded, suffix, total, suffix,
-                       dl_speed, dl_suffix, progress)
-        return s
-    except ValueError:
-        return ""
+            progress = downloaded/file_size * 100 if file_size > 0 else -1
+            fmt = "({:.2f}{}/{:.2f}{}),({:.2f}{}) {:.2f}%"
+            s = fmt.format(downloaded, suffix, file_size, suffix,
+                           dl_speed, dl_suffix, progress)
+            return s
+        except ValueError:
+            return ""
+    return f
 
 
 def json_list_parser(url,
@@ -92,36 +90,38 @@ def json_list_parser(url,
         bytes_read += len(s)
         if type(s) == bytes:
             s = s.decode('utf8')
-        return s.lstrip()
+        return s
 
     # Seek to the opening bracket of the data list
-    while True:
-        c = read(1)
-        if c == '[':
-            break
-    buf = ''
+    buf = read(chunk_size)
+    i = buf.find('[')
+    buf = buf[i+1:].lstrip()
     while True:
         temp = read(chunk_size)
         if not temp:
             break
-        # The decoder is confused by leading white space before an object.
-        # So, strip any leading white space if any.
         buf += temp
         while True:
             try:
                 x, i = _DECODER.raw_decode(buf)
                 if type(x) == dict:
-                    buf = buf[i:].lstrip()
-                    if len(buf) < chunk_size:
-                        temp = read(chunk_size)
-                        buf += temp
-                    # Look for a following comma, indicating there is another
-                    # entry in the list.
-                    i = buf.find(',')
                     yield (bytes_read, file_size), x
-                    if i == -1:
-                        raise StopIteration()
-                    buf = buf[i+1:].lstrip()
+                    buf = buf[i:]
+                    if len(buf) < chunk_size:
+                        buf += read(chunk_size)
+                    buf = buf.lstrip()
+
+                    if buf[0] == ",":
+                        # There are more items in list, drop comma & cont
+                        buf = buf[1:].lstrip()
+                    elif buf[0] == ']':
+                        # End of list, check for start of another list
+                        i = buf.find('[')
+                        if i == -1:
+                            raise StopIteration()
+                        buf = buf[i+1:].lstrip()
+                    else:
+                        raise ValueError("Badly formatted JSON List file")
                 else:  # Wrong data type, someone's not keeping to spec!
                     raise ValueError("JSON file contains incorrect datatypes!")
             except ValueError:
