@@ -16,6 +16,8 @@ import models
 import db
 
 NULL_URL = "NOT SUBMITTED"
+PROFILE_DB = False
+PROFILE_DOWNLOAD = False
 
 
 def init_logger(logger_name):
@@ -30,7 +32,7 @@ def init_logger(logger_name):
 
 class Downloader:
     url_limit = 10
-    data_limit = 500
+    data_limit = 100
     download_attempts = 3
 
     def __init__(self, issuer_group, queue, label):
@@ -128,6 +130,8 @@ class Downloader:
 
 
 class Consumer:
+    commit_size = 1000
+
     def __init__(self, queue, label="CS"):
         self.logger = init_logger("DL_{}".format(label))
         self.q = queue
@@ -136,28 +140,29 @@ class Consumer:
         # Declare a few auxillary lookup tables
         self.provs = {}  # maps npi to idx_provider
         self.drugs = {}  # maps rx_norm_id to idx_drug
+        self.commit_obj_cnt = 0
 
     def _process_issuer_group(self, issuer_group):
         id_ = issuer_group.idx_issuer_group
-        self.logger.info("Inserting Issuer Group: {}".format(id_))
+        self.logger.debug("Inserting Issuer Group: {}".format(id_))
         db.insert_issuer_group(self.conn, issuer_group)
 
     def _process_url(self, url):
-        self.logger.info("Inserting URL: {}".format(url))
+        self.logger.debug("Inserting URL: {}".format(url))
         db.insert_data_url(self.conn, url)
 
     def _process_issuer(self, issuer):
-        self.logger.info("Inserting Issuer: {}".format(issuer.id_issuer))
+        self.logger.debug("Inserting Issuer: {}".format(issuer.id_issuer))
         db.insert_issuer(self.conn, issuer)
 
     def _process_plan(self, plan):
-        self.logger.info("Inserting Plan: {}".format(plan.marketing_name))
+        self.logger.debug("Inserting Plan: {}".format(plan.marketing_name))
         db.insert_plan(self.conn, plan)
 
     def _process_provider(self, prov):
         conn = self.conn
         log = self.logger
-        log.info("Inserting Provider: {},{}".format(prov.npi, prov.name))
+        log.debug("Inserting Provider: {},{}".format(prov.npi, prov.name))
         if not prov.npi:
             return
         if prov.npi not in self.provs:
@@ -178,7 +183,7 @@ class Consumer:
     def _process_drug(self, drug):
         conn = self.conn
         log = self.logger
-        log.info("Inserting Drug: {}".format(drug.name))
+        log.debug("Inserting Drug: {}".format(drug.name))
         if not drug.rxnorm_id:
             return
         if drug.rxnorm_id not in self.drugs:
@@ -204,7 +209,10 @@ class Consumer:
             else:
                 try:
                     map_[type(obj)](obj)
-                    self.conn.commit()
+                    self.commit_obj_cnt += 1
+                    if self.commit_obj_cnt >= self.commit_size:
+                        self.conn.commit()
+                        self.commit_obj_cnt = 0
                 except Exception as e:
                     log.exception(e)
                     self.conn.rollback()
@@ -212,13 +220,23 @@ class Consumer:
 
 def consume(q):
     consumer = Consumer(q)
-    consumer.run()
+    if PROFILE_DB:
+        import cProfile
+        cProfile.runctx('consumer.run()', globals(), locals(),
+                        'consumer.prof')
+    else:
+        consumer.run()
 
 
 def produce(args):
     issuer_group, label = args
     producer = Downloader(issuer_group, produce.q, label)
-    producer.run()
+    if PROFILE_DOWNLOAD:
+        import cProfile
+        fname = "producer_{:02d}.prof".format(label)
+        cProfile.runctx('producer.run()', globals(), locals(), fname)
+    else:
+        producer.run()
 
 
 def init_produce(q):
@@ -306,7 +324,7 @@ class Manager:
     def run(self):
         self._find_issuer_groups()
         self._apply_filters()
-        q = mp.Queue()
+        q = mp.Queue(maxsize=1000)
         consume_proc = mp.Process(target=consume, args=(q,))
         consume_proc.start()
         pool = mp.Pool(self.num_processes, init_produce, [q])
