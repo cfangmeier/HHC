@@ -27,12 +27,13 @@ def init_logger(logger_name):
     fmt = "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
     ch.setFormatter(logging.Formatter(fmt=fmt))
     logger.addHandler(ch)
+    logger.setLevel(logging.INFO)
     return logger
 
 
 class Downloader:
-    url_limit = 10
-    data_limit = 100
+    url_limit = 0
+    data_limit = 0
     download_attempts = 3
 
     def __init__(self, issuer_group, queue, label):
@@ -130,7 +131,7 @@ class Downloader:
 
 
 class Consumer:
-    commit_size = 1000
+    commit_size = 10000
 
     def __init__(self, queue, label="CS"):
         self.logger = init_logger("DL_{}".format(label))
@@ -204,6 +205,7 @@ class Consumer:
             obj = self.q.get()
             if obj == "QUIT":
                 log.info("Consumer received quit signal. closing db...")
+                self.conn.commit()
                 self.conn.close()
                 break
             else:
@@ -211,6 +213,8 @@ class Consumer:
                     map_[type(obj)](obj)
                     self.commit_obj_cnt += 1
                     if self.commit_obj_cnt >= self.commit_size:
+                        fmt = "Successfully downloaded {} objects, commiting to db."
+                        log.info(fmt.format(self.commit_obj_cnt))
                         self.conn.commit()
                         self.commit_obj_cnt = 0
                 except Exception as e:
