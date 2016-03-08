@@ -55,17 +55,25 @@ class Downloader:
         if not success:
             return
 
-        data_urls = self.issuer_group.data_urls
+        plan_urls = list(filter(lambda x: x.url_type == models.URLType.plan,
+                                self.issuer_group.data_urls))
+        n = len(plan_urls)
+        for i, url in enumerate(plan_urls):
+            log.info("Downloading from Plan URL {}/{}".format(i+1, n))
+            success = self._download_objects(url.url, models.Plan, 0)
+            url.status = "finished" if success else "failed"
+            self.q.put(url)
+
+        data_urls = list(filter(lambda x: x.url_type != models.URLType.plan,
+                                self.issuer_group.data_urls))
         if self.url_limit:
             data_urls = data_urls[:self.url_limit]
         n = len(data_urls)
         for i, url in enumerate(data_urls):
-            log.info("Downloading from URL {}/{}".format(i+1, n))
-            if url.url_type == models.URLType.plan:
-                success = self._download_objects(url.url, models.Plan)
-            elif url.url_type == models.URLType.drug:
+            log.info("Downloading from Data URL {}/{}".format(i+1, n))
+            if url.url_type == models.URLType.drug:
                 success = self._download_objects(url.url, models.Drug)
-            elif url.url_type == models.URLType.prov:
+            else:  # provider url
                 success = self._download_objects(url.url, models.Provider)
             url.status = "finished" if success else "failed"
             self.q.put(url)
@@ -97,8 +105,10 @@ class Downloader:
             log.error(fmt.format(iss_grp.index_url))
             return False
 
-    def _download_objects(self, url, class_):
+    def _download_objects(self, url, class_, data_limit=None):
         log = self.logger
+        if data_limit is None:
+            data_limit = self.data_limit
         formatter = download_formatter()
 
         def status(bytes_read, file_size, i):
@@ -117,12 +127,12 @@ class Downloader:
                     continue
                 if i > 0 and ((i % 1000) == 0):
                     status(bytes_read, file_size, i)
-                if self.data_limit and i > self.data_limit:
+                if data_limit and i > data_limit:
                     log.info("Hit data limit, breaking...")
                     status(bytes_read, file_size, i)
                     break
-            fmt = "Finished download of url: {}, size: {} MB"
-            log.info(fmt.format(url, file_size/2**20))
+            fmt = "Finished download of url: {} |{} MB"
+            log.info(fmt.format(url, bytes_read/2**20))
             return True
         except Exception as e:
             log.exception(e)
@@ -141,6 +151,9 @@ class Consumer:
         # Declare a few auxillary lookup tables
         self.provs = {}  # maps npi to idx_provider
         self.drugs = {}  # maps rx_norm_id to idx_drug
+        self.facility_types = {}  # maps name(str) to idx
+        self.specialties = {}  # maps name(str) to idx
+        self.languages = {}  # maps name(str) to idx
         self.commit_obj_cnt = 0
 
     def _process_issuer_group(self, issuer_group):
@@ -170,12 +183,24 @@ class Consumer:
             self.provs[prov.npi] = db.insert_provider(conn, prov)
         idx_prov = self.provs[prov.npi]
 
-        for language in prov.languages:
-            db.insert_language(conn, language, idx_prov)
-        for specialty in prov.specialties:
-            db.insert_specialty(conn, specialty, idx_prov)
-        for facility_type in prov.facility_types:
-            db.insert_facility_type(conn, facility_type, idx_prov)
+        for lang in prov.languages:
+            if lang not in self.languages:
+                self.languages[lang] = db.insert_language(conn, lang)
+            idx_lang = self.languages[lang]
+            db.insert_provider_language(conn, idx_prov, idx_lang)
+
+        for spec in prov.specialties:
+            if spec not in self.specialties:
+                self.specialties[spec] = db.insert_specialty(conn, spec)
+            idx_spec = self.specialties[spec]
+            db.insert_provider_specialty(conn, idx_prov, idx_spec)
+
+        for ft in prov.facility_types:
+            if ft not in self.facility_types:
+                self.facility_types[ft] = db.insert_facility_type(conn, ft)
+            idx_facil = self.facility_types[ft]
+            db.insert_provider_facility_type(conn, idx_prov, idx_facil)
+
         for address in prov.addresses:
             db.insert_address(conn, address, idx_prov)
         for plan in prov.plans:
@@ -213,13 +238,14 @@ class Consumer:
                     map_[type(obj)](obj)
                     self.commit_obj_cnt += 1
                     if self.commit_obj_cnt >= self.commit_size:
-                        fmt = "Successfully downloaded {} objects, commiting to db."
+                        fmt = ("Successfully downloaded {} objects, "
+                               "commiting to db.")
                         log.info(fmt.format(self.commit_obj_cnt))
                         self.conn.commit()
+                        log.info("Finished commit.")
                         self.commit_obj_cnt = 0
                 except Exception as e:
                     log.exception(e)
-                    self.conn.rollback()
 
 
 def consume(q):

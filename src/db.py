@@ -208,63 +208,45 @@ def insert_address(conn, address, idx_provider):
                   "VALUES (?,?,?,?,?,?);"), args)
 
 
-def _insert_language(conn, language):
+def insert_language(conn, language):
     args = (language,)
-    idx = conn.execute(("SELECT idx_language FROM Language "
-                        "WHERE language=?"), args).fetchone()
-    if idx is not None:
-        return idx[0]
-    else:
-        conn.execute(("INSERT INTO Language "
-                      "(language) "
-                      "VALUES (?);"), args)
-        return get_last_idx(conn)
+    conn.execute(("INSERT INTO Language "
+                  "(language) "
+                  "VALUES (?);"), args)
+    return get_last_idx(conn)
 
 
-def insert_language(conn, language, idx_provider):
-    idx_language = _insert_language(conn, language)
+def insert_provider_language(conn, idx_provider, idx_language):
     args = (idx_provider, idx_language)
     conn.execute(("INSERT INTO Provider_Language "
                   "(idx_provider, idx_language) "
                   "VALUES (?,?);"), args)
 
 
-def _insert_facility_type(conn, facility_type):
+def insert_facility_type(conn, facility_type):
     args = (facility_type,)
-    idx = conn.execute(("SELECT idx_facility_type FROM FacilityType "
-                        "WHERE facility_type=?"), args).fetchone()
-    if idx is not None:
-        return idx[0]
-    else:
-        conn.execute(("INSERT INTO FacilityType "
-                      "(facility_type) "
-                      "VALUES (?);"), args)
-        return get_last_idx(conn)
+    conn.execute(("INSERT INTO FacilityType "
+                  "(facility_type) "
+                  "VALUES (?);"), args)
+    return get_last_idx(conn)
 
 
-def insert_facility_type(conn, facility_type, idx_provider):
-    idx_facility_type = _insert_facility_type(conn, facility_type)
+def insert_provider_facility_type(conn, idx_provider, idx_facility_type):
     args = (idx_provider, idx_facility_type)
     conn.execute(("INSERT INTO Provider_FacilityType "
                   "(idx_provider, idx_facility_type) "
                   "VALUES (?,?);"), args)
 
 
-def _insert_specialty(conn, specialty):
+def insert_specialty(conn, specialty):
     args = (specialty,)
-    idx = conn.execute(("SELECT idx_specialty FROM Specialty "
-                        "WHERE specialty=?;"), args).fetchone()
-    if idx is not None:
-        return idx[0]
-    else:
-        conn.execute(("INSERT INTO Specialty "
-                      "(specialty) "
-                      "VALUES (?);"), args)
-        return get_last_idx(conn)
+    conn.execute(("INSERT INTO Specialty "
+                  "(specialty) "
+                  "VALUES (?);"), args)
+    return get_last_idx(conn)
 
 
-def insert_specialty(conn, specialty, idx_provider):
-    idx_specialty = _insert_specialty(conn, specialty)
+def insert_provider_specialty(conn, idx_provider, idx_specialty):
     args = (idx_provider, idx_specialty)
     conn.execute(("INSERT INTO Provider_Specialty "
                   "(idx_provider, idx_specialty) "
