@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import io
+import os
 import json
 import logging
 import zipfile
@@ -21,8 +22,10 @@ PROFILE_DOWNLOAD = False
 
 
 def init_logger(logger_name):
+    if not os.path.exists("data"):
+        os.mkdir("data")
     logger = logging.Logger(logger_name)
-    log_name = "{}.log".format(logger_name)
+    log_name = "data/{}.log".format(logger_name)
     ch = logging.FileHandler(log_name, mode='w')
     fmt = "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
     ch.setFormatter(logging.Formatter(fmt=fmt))
@@ -154,6 +157,7 @@ class Consumer:
         self.facility_types = {}  # maps name(str) to idx
         self.specialties = {}  # maps name(str) to idx
         self.languages = {}  # maps name(str) to idx
+        self.plans = {}  # maps (id_issuer,id_plan) to idx_plan
         self.commit_obj_cnt = 0
 
     def _process_issuer_group(self, issuer_group):
@@ -171,7 +175,9 @@ class Consumer:
 
     def _process_plan(self, plan):
         self.logger.debug("Inserting Plan: {}".format(plan.marketing_name))
-        db.insert_plan(self.conn, plan)
+        if (plan.id_issuer, plan.id_plan) not in self.plans:
+            idx_plan = db.insert_plan(self.conn, plan)
+            self.plans[(plan.id_issuer, plan.id_plan)] = idx_plan
 
     def _process_provider(self, prov):
         conn = self.conn
@@ -203,8 +209,16 @@ class Consumer:
 
         for address in prov.addresses:
             db.insert_address(conn, address, idx_prov)
+
         for plan in prov.plans:
-            db.insert_provider_plan(conn, plan, idx_prov)
+            if (plan.id_issuer, plan.id_plan) not in self.plans:
+                p = models.Plan()
+                p.id_issuer = plan.id_issuer
+                p.id_plan = plan.id_plan
+                p.plan_id_type = "VOID"
+                self._process_plan(p)
+            idx_plan = self.plans[(plan.id_issuer, plan.id_plan)]
+            db.insert_provider_plan(conn, plan, idx_plan, idx_prov)
 
     def _process_drug(self, drug):
         conn = self.conn

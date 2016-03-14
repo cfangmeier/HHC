@@ -80,12 +80,15 @@ class Issuer:
 class Plan:
     def __init__(self, plan_dict=None):
         if not plan_dict:
+            self.id_issuer = None
             self.id_plan = None
             self.id_plan_type = None
             self.marketing_name = None
             self.summary_url = None
         else:
-            self.id_plan = plan_dict.get('plan_id')
+            id_plan = plan_dict.get('plan_id')
+            self.id_issuer = int(id_plan[:5])
+            self.id_plan = id_plan[5:]
             self.plan_id_type = plan_dict.get('plan_id_type')
             self.marketing_name = plan_dict.get('marketing_name')
             self.summary_url = plan_dict.get('summary_url')
@@ -150,8 +153,14 @@ class Provider:
             self.specialties = set.union(unique(prov_dict.get('specialty')),
                                          unique(prov_dict.get('speciality')))
             self.facility_types = unique(prov_dict.get('facility_type', []))
-            self.plans = [ProviderPlan(provplan_dict)
-                          for provplan_dict in prov_dict.get('plans', [])]
+
+            def unique_plans(plan_dicts):
+                plans = {}
+                for p_dict in plan_dicts:
+                    p = ProviderPlan(p_dict)
+                    plans[(p.id_plan, p.network_tier)] = p
+                return list(plans.values())
+            self.plans = unique_plans(prov_dict.get('plans', []))
             self.addresses = [Address(addr_dict)
                               for addr_dict in prov_dict.get('addresses', [])]
 
@@ -163,7 +172,9 @@ class ProviderPlan:
             self.id_plan_type = None
             self.network_tier = None
         else:
-            self.id_plan = provplan_dict.get('plan_id')
+            id_plan = provplan_dict.get('plan_id')
+            self.id_issuer = int(id_plan[:5])
+            self.id_plan = id_plan[5:]
             self.id_plan_type = provplan_dict.get('plan_id_type')
             self.network_tier = provplan_dict.get('network_tier')
 

@@ -9,7 +9,9 @@ def get_last_idx(conn):
 
 
 def open_db(recreate=True):
-    fname = "HHC_Data.sqlite3"
+    if not os.path.exists("data"):
+        os.mkdir("data")
+    fname = "data/data.sqlite3"
     if recreate and os.path.exists(fname):
         os.remove(fname)
     return sqlite3.connect(fname)
@@ -96,41 +98,24 @@ def init_db():
     CREATE TABLE Provider_Language (idx_provider INTEGER NOT NULL,
                                     idx_language INTEGER NOT NULL,
                                     UNIQUE(idx_provider,idx_language)
-                                        ON CONFLICT IGNORE,
-                                    FOREIGN KEY(idx_provider)
-                                        REFERENCES Provider(idx_provider),
-                                    FOREIGN KEY(idx_language)
-                                        REFERENCES Language(idx_language));
+                                        ON CONFLICT IGNORE);
 
     CREATE TABLE Provider_Specialty (idx_provider  INTEGER NOT NULL,
                                      idx_specialty INTEGER NOT NULL,
                                      UNIQUE(idx_provider,idx_specialty)
-                                         ON CONFLICT IGNORE,
-                                     FOREIGN KEY(idx_provider)
-                                         REFERENCES Provider(idx_provider),
-                                     FOREIGN KEY(idx_specialty)
-                                         REFERENCES Specialty(idx_specialty));
+                                         ON CONFLICT IGNORE);
 
 
     CREATE TABLE Provider_FacilityType (idx_provider      INTEGER NOT NULL,
                                         idx_facility_type INTEGER NOT NULL,
                                         UNIQUE(idx_provider, idx_facility_type)
-                                            ON CONFLICT IGNORE,
-                                        FOREIGN KEY(idx_provider)
-                                            REFERENCES Provider(idx_provider),
-                                        FOREIGN KEY(idx_facility_type)
-                                            REFERENCES
-                                            FacilityType(idx_facility_type));
+                                            ON CONFLICT IGNORE);
 
     CREATE TABLE Provider_Plan (idx_provider INTEGER NOT NULL,
                                 idx_plan     INTEGER NOT NULL,
                                 network_tier TEXT    NOT NULL,
                                 UNIQUE(idx_provider,idx_plan, network_tier)
-                                    ON CONFLICT IGNORE,
-                                FOREIGN KEY(idx_provider)
-                                    REFERENCES Provider(idx_provider),
-                                FOREIGN KEY(idx_plan)
-                                    REFERENCES Specialty(idx_plan));
+                                    ON CONFLICT IGNORE);
 
     CREATE TABLE Drug (idx_drug  INTEGER PRIMARY KEY AUTOINCREMENT,
                        rxnorm_id INTEGER NOT NULL,
@@ -143,10 +128,8 @@ def init_db():
                             prior_authorization INTEGER,
                             step_therapy        INTEGER,
                             quantity_limit      INTEGER,
-                            UNIQUE(idx_drug,idx_plan, drug_tier)
-                                ON CONFLICT IGNORE,
-                            FOREIGN KEY(idx_drug) REFERENCES Drug(idx_drug),
-                            FOREIGN KEY(idx_plan) REFERENCES Plan(idx_plan));
+                            UNIQUE(idx_drug, idx_plan, drug_tier)
+                                ON CONFLICT IGNORE);
     ''')
     return conn
 
@@ -180,8 +163,7 @@ def insert_data_url(conn, url):
 
 
 def insert_plan(conn, plan):
-    id_issuer = int(plan.id_plan[:5])
-    args = (plan.id_plan, id_issuer, plan.plan_id_type,
+    args = (plan.id_plan, plan.id_issuer, plan.plan_id_type,
             plan.marketing_name, plan.summary_url)
     conn.execute(("INSERT INTO Plan"
                   "(id_plan, id_issuer, plan_id_type, "
@@ -271,8 +253,8 @@ def insert_drug_plan(conn, drug_plan, idx_drug):
                   "VALUES (?,?,?,?,?,?);"), args)
 
 
-def insert_provider_plan(conn, prov_plan, idx_provider):
-    args = (idx_provider, prov_plan.id_plan,
+def insert_provider_plan(conn, prov_plan, idx_plan, idx_provider):
+    args = (idx_provider, idx_plan,
             prov_plan.network_tier)
     conn.execute(("INSERT INTO Provider_Plan"
                   "(idx_provider,idx_plan,network_tier) "

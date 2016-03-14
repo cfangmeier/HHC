@@ -133,8 +133,8 @@ def json_list_parser(url,
     if buf:
         if len(buf) > 70:
             buf = buf[:70] + '...'
-        msg = "Leftover stuff from input: \"{}\"\nLast object:\n{}"
-        raise ValueError(msg.format(buf, x))
+        msg = "Leftover stuff from input: \"{}\""
+        raise ValueError(msg.format(buf))
 
 
 if __name__ == "__main__":
