@@ -108,7 +108,7 @@ class Downloader:
             log.error(fmt.format(iss_grp.index_url))
             return False
 
-    def _download_objects(self, url, class_, data_limit=None):
+    def _download_objects_attempt(self, url, class_, data_limit=None):
         log = self.logger
         if data_limit is None:
             data_limit = self.data_limit
@@ -141,6 +141,17 @@ class Downloader:
             log.exception(e)
             log.warning("Error loading data from {}".format(url))
             return False
+
+    def _download_objects(self, url, class_, data_limit=None):
+        for i in range(self.download_attempts):
+            fmt = "Starting Download Attempt {}/{}"
+            self.logger.info(fmt.format(i+1,self.download_attempts))
+            success = self._download_objects_attempt(url, class_, data_limit=None)
+            if success:
+                return True
+            else:
+               continue
+        return False
 
 
 class Consumer:
@@ -187,28 +198,29 @@ class Consumer:
             return
         if prov.npi not in self.provs:
             self.provs[prov.npi] = db.insert_provider(conn, prov)
+            idx_prov = self.provs[prov.npi]
+    
+            for lang in prov.languages:
+                if lang not in self.languages:
+                    self.languages[lang] = db.insert_language(conn, lang)
+                idx_lang = self.languages[lang]
+                db.insert_provider_language(conn, idx_prov, idx_lang)
+    
+            for spec in prov.specialties:
+                if spec not in self.specialties:
+                    self.specialties[spec] = db.insert_specialty(conn, spec)
+                idx_spec = self.specialties[spec]
+                db.insert_provider_specialty(conn, idx_prov, idx_spec)
+    
+            for ft in prov.facility_types:
+                if ft not in self.facility_types:
+                    self.facility_types[ft] = db.insert_facility_type(conn, ft)
+                idx_facil = self.facility_types[ft]
+                db.insert_provider_facility_type(conn, idx_prov, idx_facil)
+
+            for address in prov.addresses:
+                db.insert_address(conn, address, idx_prov)
         idx_prov = self.provs[prov.npi]
-
-        for lang in prov.languages:
-            if lang not in self.languages:
-                self.languages[lang] = db.insert_language(conn, lang)
-            idx_lang = self.languages[lang]
-            db.insert_provider_language(conn, idx_prov, idx_lang)
-
-        for spec in prov.specialties:
-            if spec not in self.specialties:
-                self.specialties[spec] = db.insert_specialty(conn, spec)
-            idx_spec = self.specialties[spec]
-            db.insert_provider_specialty(conn, idx_prov, idx_spec)
-
-        for ft in prov.facility_types:
-            if ft not in self.facility_types:
-                self.facility_types[ft] = db.insert_facility_type(conn, ft)
-            idx_facil = self.facility_types[ft]
-            db.insert_provider_facility_type(conn, idx_prov, idx_facil)
-
-        for address in prov.addresses:
-            db.insert_address(conn, address, idx_prov)
 
         for plan in prov.plans:
             if (plan.id_issuer, plan.id_plan) not in self.plans:

@@ -59,17 +59,14 @@ def init_db():
                        id_issuer      INTEGER NOT NULL,
                        plan_id_type   TEXT    NOT NULL,
                        marketing_name TEXT,
-                       summary_url    TEXT,
-                       UNIQUE(id_plan,id_issuer) ON CONFLICT FAIL,
-                       FOREIGN KEY(id_issuer) REFERENCES Issuer(id_issuer));
+                       summary_url    TEXT);
 
     CREATE TABLE Provider (idx_provider    INTEGER PRIMARY KEY AUTOINCREMENT,
                            npi             INTEGER,
                            name            TEXT    NOT NULL,
                            last_updated_on INTEGER NOT NULL,
                            type            INTEGER NOT NULL,
-                           accepting       INTEGER NOT NULL,
-                           UNIQUE(npi, name) ON CONFLICT FAIL);
+                           accepting       INTEGER NOT NULL);
 
     CREATE TABLE Address (idx_provider INTEGER NOT NULL,
                           address      TEXT,
@@ -113,9 +110,7 @@ def init_db():
 
     CREATE TABLE Provider_Plan (idx_provider INTEGER NOT NULL,
                                 idx_plan     INTEGER NOT NULL,
-                                network_tier TEXT    NOT NULL,
-                                UNIQUE(idx_provider,idx_plan, network_tier)
-                                    ON CONFLICT IGNORE);
+                                network_tier TEXT    NOT NULL);
 
     CREATE TABLE Drug (idx_drug  INTEGER PRIMARY KEY AUTOINCREMENT,
                        rxnorm_id INTEGER NOT NULL,
@@ -127,9 +122,7 @@ def init_db():
                             drug_tier           TEXT,
                             prior_authorization INTEGER,
                             step_therapy        INTEGER,
-                            quantity_limit      INTEGER,
-                            UNIQUE(idx_drug, idx_plan, drug_tier)
-                                ON CONFLICT IGNORE);
+                            quantity_limit      INTEGER);
     ''')
     return conn
 
