@@ -14,7 +14,9 @@ def open_db(recreate=True):
     fname = "data/data.sqlite3"
     if recreate and os.path.exists(fname):
         os.remove(fname)
-    return sqlite3.connect(fname)
+    conn = sqlite3.connect(fname)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    return conn
 
 
 def init_db():

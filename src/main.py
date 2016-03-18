@@ -145,22 +145,24 @@ class Downloader:
     def _download_objects(self, url, class_, data_limit=None):
         for i in range(self.download_attempts):
             fmt = "Starting Download Attempt {}/{}"
-            self.logger.info(fmt.format(i+1,self.download_attempts))
-            success = self._download_objects_attempt(url, class_, data_limit=None)
+            self.logger.info(fmt.format(i+1, self.download_attempts))
+            success = self._download_objects_attempt(url, class_,
+                                                     data_limit=None)
             if success:
                 return True
             else:
-               continue
+                continue
         return False
 
 
 class Consumer:
     commit_size = 10000
 
-    def __init__(self, queue, label="CS"):
+    def __init__(self, queue, label="CS", states=None):
         self.logger = init_logger("DL_{}".format(label))
         self.q = queue
         self.conn = db.init_db()
+        self.states = states
 
         # Declare a few auxillary lookup tables
         self.provs = {}  # maps npi to idx_provider
@@ -190,28 +192,38 @@ class Consumer:
             idx_plan = db.insert_plan(self.conn, plan)
             self.plans[(plan.id_issuer, plan.id_plan)] = idx_plan
 
+    def _check_provider_in_state(self, prov):
+        if not self.states:
+            return True  # No states selected
+        for addr in prov.addresses:
+            if addr.state in self.states:
+                return True
+        return False
+
     def _process_provider(self, prov):
         conn = self.conn
         log = self.logger
         log.debug("Inserting Provider: {},{}".format(prov.npi, prov.name))
         if not prov.npi:
             return
+        if not self._check_provider_in_state(prov):
+            return
         if prov.npi not in self.provs:
             self.provs[prov.npi] = db.insert_provider(conn, prov)
             idx_prov = self.provs[prov.npi]
-    
+
             for lang in prov.languages:
                 if lang not in self.languages:
                     self.languages[lang] = db.insert_language(conn, lang)
                 idx_lang = self.languages[lang]
                 db.insert_provider_language(conn, idx_prov, idx_lang)
-    
+
             for spec in prov.specialties:
                 if spec not in self.specialties:
                     self.specialties[spec] = db.insert_specialty(conn, spec)
                 idx_spec = self.specialties[spec]
                 db.insert_provider_specialty(conn, idx_prov, idx_spec)
-    
+
             for ft in prov.facility_types:
                 if ft not in self.facility_types:
                     self.facility_types[ft] = db.insert_facility_type(conn, ft)
@@ -274,8 +286,8 @@ class Consumer:
                     log.exception(e)
 
 
-def consume(q):
-    consumer = Consumer(q)
+def consume(q, states):
+    consumer = Consumer(q, states=states)
     if PROFILE_DB:
         import cProfile
         cProfile.runctx('consumer.run()', globals(), locals(),
@@ -381,7 +393,8 @@ class Manager:
         self._find_issuer_groups()
         self._apply_filters()
         q = mp.Queue(maxsize=1000)
-        consume_proc = mp.Process(target=consume, args=(q,))
+        consume_proc = mp.Process(target=consume, args=(q,
+                                                        self.requested_states))
         consume_proc.start()
         pool = mp.Pool(self.num_processes, init_produce, [q])
         pool.map(produce, [(grp, i)
