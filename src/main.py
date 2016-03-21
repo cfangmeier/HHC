@@ -256,6 +256,15 @@ class Consumer:
         for plan in drug.plans:
             db.insert_drug_plan(conn, plan, idx_drug)
 
+    def _add_indices(self):
+        self.logger.info("Creating indices...")
+        query = ("CREATE INDEX idx_Provider_Plan ON Provider_Plan "
+                 "(idx_provider, idx_plan);")
+        self.conn.execute(query)
+        query = "CREATE INDEX idx_Address_zip ON Address (zip);"
+        self.conn.execute(query)
+        self.logger.info("Finished")
+
     def run(self):
         log = self.logger
         map_ = {models.IssuerGroup:      self._process_issuer_group,

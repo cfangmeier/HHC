@@ -23,19 +23,19 @@ def open_full_db(path):
 def init_state_db(state):
     conn = open_state_db(state)
     conn.executescript('''
-    CREATE TABLE Issuer (id_issuer             INTEGER PRIMARY KEY,
-                         name                  TEXT    NOT NULL,
-                         state                 TEXT    NOT NULL,
+    CREATE TABLE Issuer (id_issuer INTEGER PRIMARY KEY,
+                         name      TEXT    NOT NULL,
+                         state     TEXT    NOT NULL,
                          UNIQUE (id_issuer) ON CONFLICT FAIL);
 
-    CREATE TABLE Plan (idx_plan       INTEGER PRIMARY KEY AUTOINCREMENT,
+    CREATE TABLE Plan (idx_plan       INTEGER PRIMARY KEY,
                        id_plan        TEXT    NOT NULL,
                        id_issuer      INTEGER NOT NULL,
                        plan_id_type   TEXT    NOT NULL,
                        marketing_name TEXT,
                        summary_url    TEXT);
 
-    CREATE TABLE Provider (idx_provider    INTEGER PRIMARY KEY AUTOINCREMENT,
+    CREATE TABLE Provider (idx_provider    INTEGER PRIMARY KEY,
                            npi             INTEGER,
                            name            TEXT    NOT NULL,
                            last_updated_on INTEGER NOT NULL,
@@ -53,16 +53,15 @@ def init_state_db(state):
                           FOREIGN KEY(idx_provider)
                               REFERENCES Provider(idx_provider));
 
-    CREATE TABLE Language (idx_language INTEGER PRIMARY KEY AUTOINCREMENT,
+    CREATE TABLE Language (idx_language INTEGER PRIMARY KEY,
                            language     TEXT    NOT NULL,
                            UNIQUE(language) ON CONFLICT FAIL);
 
-    CREATE TABLE Specialty (idx_specialty INTEGER PRIMARY KEY AUTOINCREMENT,
+    CREATE TABLE Specialty (idx_specialty INTEGER PRIMARY KEY,
                             specialty     TEXT    NOT NULL,
                             UNIQUE(specialty) ON CONFLICT FAIL);
 
-    CREATE TABLE FacilityType (idx_facility_type INTEGER
-                                   PRIMARY KEY AUTOINCREMENT,
+    CREATE TABLE FacilityType (idx_facility_type INTEGER PRIMARY KEY,
                                facility_type     TEXT    NOT NULL,
                                UNIQUE(facility_type) ON CONFLICT FAIL);
 
@@ -125,9 +124,111 @@ def clone_common_tables(conn_full, conn_state):
             val = rs.fetchone()
             if val is None:
                 break
-            s = ','.join("?"*len(val))
+            s = ','.join(["?"]*len(val))
             ins = "INSERT INTO {} VALUES ({});".format(table, s)
-            conn_state.execute(ins)
+            conn_state.execute(ins, val)
+    conn_state.commit()
+
+
+def clone_provider_in_state(conn_full, conn_state, state):
+
+    def prov_addr_in_state():
+        query = ("SELECT idx_provider, address, city, state, zip, phone "
+                 "FROM Address WHERE state = ? "
+                 "ORDER BY idx_provider;")
+        rs = conn_full.execute(query, (state,))
+        addr = rs.fetchone()
+        idx = addr[0]
+        addrs = [addr]
+        while True:
+            addr = rs.fetchone()
+            if addr is None:
+                break
+            if addr[0] != idx:
+                yield idx, addrs
+                idx = addr[0]
+                addrs = []
+            addrs.append(addr)
+
+    def insert_addresses(addrs):
+        query = "INSERT INTO Address VALUES (?,?,?,?,?,?);"
+        for addr in addrs:
+            conn_state.execute(query, addr)
+
+    def copy_provider(idx):
+        query = ("SELECT npi, name, last_updated_on, type, accepting "
+                 "FROM Provider WHERE idx_provider = ?;")
+        prov = conn_full.execute(query, (idx,)).fetchone()
+        ins = "INSERT INTO Provider VALUES (?,?,?,?,?,?);"
+        conn_state.execute(ins, (idx, *prov))
+
+    def copy_languages(idx):
+        query = ("SELECT idx_language FROM Provider_Language "
+                 "WHERE idx_provider = ?;")
+        rs = conn_full.execute(query, (idx,))
+        while True:
+            vals = rs.fetchone()
+            if vals is None:
+                break
+            idx_lang = vals[0]
+            ins = "INSERT INTO Provider_Language VALUES (?, ?);"
+            conn_state.execute(ins, (idx, idx_lang))
+
+    def copy_specialties(idx):
+        query = ("SELECT idx_specialty FROM Provider_Specialty "
+                 "WHERE idx_provider = ?;")
+        rs = conn_full.execute(query, (idx,))
+        while True:
+            vals = rs.fetchone()
+            if vals is None:
+                break
+            idx_spec = vals[0]
+            ins = "INSERT INTO Provider_Specialty VALUES (?, ?);"
+            conn_state.execute(ins, (idx, idx_spec))
+
+    def copy_facility_types(idx):
+        query = ("SELECT idx_facility_type FROM Provider_FacilityType "
+                 "WHERE idx_provider = ?;")
+        rs = conn_full.execute(query, (idx,))
+        while True:
+            vals = rs.fetchone()
+            if vals is None:
+                break
+            idx_type = vals[0]
+            ins = "INSERT INTO Provider_FacilityType VALUES (?, ?);"
+            conn_state.execute(ins, (idx, idx_type))
+
+    def copy_plans(idx):
+        query = ("SELECT idx_plan,network_tier FROM Provider_Plan "
+                 "WHERE idx_provider = ?;")
+        rs = conn_full.execute(query, (idx,))
+        plans = set()
+        while True:
+            vals = rs.fetchone()
+            if vals is None:
+                break
+            plans.add((idx, *vals))
+        ins = "INSERT INTO Provider_Plan VALUES (?,?,?)"
+        for plan in plans:
+            conn_state.execute(ins, plan)
+        return len(plans)
+
+    for idx, addrs in prov_addr_in_state():
+        copy_provider(idx)
+        insert_addresses(addrs)
+        copy_languages(idx)
+        copy_specialties(idx)
+        copy_facility_types(idx)
+        n = copy_plans(idx)
+        print("Inserting Provider {}:{}".format(idx,n))
+
+    print("Creating indices...")
+    query = ("CREATE INDEX Index_Provider_Plan ON Provider_Plan "
+             "(idx_provider, idx_plan);")
+    conn_state.execute(query)
+    query = "CREATE INDEX Index_Address_zip ON Address (zip);"
+    conn_state.execute(query)
+    print("Finished")
     conn_state.commit()
 
 
@@ -136,6 +237,7 @@ def main(db_path, state):
     conn_state = init_state_db(state)
 
     clone_common_tables(conn_full, conn_state)
+    clone_provider_in_state(conn_full, conn_state, state)
 
     conn_full.close()
     conn_state.close()
