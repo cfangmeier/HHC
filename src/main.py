@@ -276,6 +276,7 @@ class Consumer:
         while True:
             obj = self.q.get()
             if obj == "QUIT":
+                self._add_indices()
                 log.info("Consumer received quit signal. closing db...")
                 self.conn.commit()
                 self.conn.close()
