@@ -43,12 +43,14 @@ class URLType(IntEnum):
     prov = 0
     plan = 1
     drug = 2
+    void = 3
 
     @classmethod
     def get_name(cls, type_):
         type_map = {cls.plan: "Plan",
                     cls.prov: "Provider",
-                    cls.drug: "Drug"}
+                    cls.drug: "Drug",
+                    cls.void: "Void"}
         return type_map.get(type_)
 
 
@@ -63,10 +65,14 @@ class IssuerGroup:
 
 class IssuerGroupURL:
     def __init__(self, idx, url, url_type, status=""):
+        self.url_id = None
         self.idx_issuer_group = idx
         self.url = url
         self.url_type = url_type
         self.status = status
+
+    def __str__(self):
+        return "{}|{}|{}".format(self.url_id, self.status, self.url)
 
 
 class Issuer:
@@ -78,7 +84,7 @@ class Issuer:
 
 
 class Plan:
-    def __init__(self, plan_dict=None):
+    def __init__(self, plan_dict=None, source_url=None):
         if not plan_dict:
             self.id_issuer = None
             self.id_plan = None
@@ -92,6 +98,7 @@ class Plan:
             self.plan_id_type = plan_dict.get('plan_id_type')
             self.marketing_name = plan_dict.get('marketing_name')
             self.summary_url = plan_dict.get('summary_url')
+        self.source_url = source_url
 
 
 class Address():
@@ -116,7 +123,7 @@ class Address():
 
 
 class Provider:
-    def __init__(self, prov_dict=None):
+    def __init__(self, prov_dict=None, source_url=None):
         if prov_dict is None:
             self.npi = -1
             self.type_ = ProviderType.no_type   # ProviderType Enum
@@ -163,6 +170,7 @@ class Provider:
             self.plans = unique_plans(prov_dict.get('plans', []))
             self.addresses = [Address(addr_dict)
                               for addr_dict in prov_dict.get('addresses', [])]
+        self.source_url = source_url
 
 
 class ProviderPlan:
@@ -180,7 +188,7 @@ class ProviderPlan:
 
 
 class Drug:
-    def __init__(self, drug_dict=None):
+    def __init__(self, drug_dict=None, source_url=None):
         if drug_dict is None:
             self.rxnorm_id = None
             self.name = None
@@ -190,6 +198,7 @@ class Drug:
             self.name = drug_dict.get('drug_name')
             self.plans = [DrugPlan(drugplan_dict)
                           for drugplan_dict in drug_dict.get('plans', [])]
+        self.source_url = source_url
 
 
 class DrugPlan:

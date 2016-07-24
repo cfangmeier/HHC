@@ -20,6 +20,11 @@ def open_db(recreate=True):
 
 
 def init_db():
+    """ init_db
+    Creates the initial database. *THIS IS NOT THE FINAL SCHEMA*. After the
+    download finishes. The cleanup stage will modify some of the table
+    restraints.
+    """
     conn = open_db()
     conn.executescript('''
     CREATE TABLE IssuerGroup (idx_issuer_group INTEGER PRIMARY KEY,
@@ -34,41 +39,50 @@ def init_db():
                              REFERENCES IssuerGroup(idx_issuer_group),
                          UNIQUE (id_issuer) ON CONFLICT FAIL);
 
-    CREATE TABLE ProviderURL (url              TEXT    NOT NULL,
+    CREATE TABLE ProviderURL (url_id           INTEGER PRIMARY KEY,
+                              url              TEXT    NOT NULL,
                               idx_issuer_group INTEGER NOT NULL,
                               download_status  TEXT    NOT NULL,
                               FOREIGN KEY(idx_issuer_group)
                                   REFERENCES IssuerGroup(id_issuer_group),
                               UNIQUE(url, idx_issuer_group)
-                                  ON CONFLICT REPLACE);
+                                  ON CONFLICT FAIL);
 
-    CREATE TABLE PlanURL (url              TEXT    NOT NULL,
+    CREATE TABLE PlanURL (url_id           INTEGER PRIMARY KEY,
+                          url              TEXT    NOT NULL,
                           idx_issuer_group INTEGER NOT NULL,
                           download_status  TEXT    NOT NULL,
                           FOREIGN KEY(idx_issuer_group)
                               REFERENCES IssuerGroup(id_issuer_group),
-                          UNIQUE(url, idx_issuer_group) ON CONFLICT REPLACE);
+                          UNIQUE(url, idx_issuer_group) ON CONFLICT FAIL);
 
-    CREATE TABLE DrugURL (url              TEXT    NOT NULL,
+    CREATE TABLE DrugURL (url_id           INTEGER PRIMARY KEY,
+                          url              TEXT    NOT NULL,
                           idx_issuer_group INTEGER NOT NULL,
                           download_status  TEXT    NOT NULL,
                           FOREIGN KEY(idx_issuer_group)
                               REFERENCES IssuerGroup(id_issuer_group),
-                          UNIQUE(url, idx_issuer_group) ON CONFLICT REPLACE);
+                          UNIQUE(url, idx_issuer_group) ON CONFLICT FAIL);
 
     CREATE TABLE Plan (idx_plan       INTEGER PRIMARY KEY AUTOINCREMENT,
                        id_plan        TEXT    NOT NULL,
                        id_issuer      INTEGER NOT NULL,
                        plan_id_type   TEXT    NOT NULL,
                        marketing_name TEXT,
-                       summary_url    TEXT);
+                       summary_url    TEXT,
+                       source_url_id     INTEGER,
+                       FOREIGN KEY(source_url_id)
+                           REFERENCES PlanURL(url_id));
 
     CREATE TABLE Provider (idx_provider    INTEGER PRIMARY KEY AUTOINCREMENT,
                            npi             INTEGER,
                            name            TEXT    NOT NULL,
                            last_updated_on INTEGER NOT NULL,
                            type            INTEGER NOT NULL,
-                           accepting       INTEGER NOT NULL);
+                           accepting       INTEGER NOT NULL,
+                           source_url_id      INTEGER,
+                           FOREIGN KEY(source_url_id)
+                               REFERENCES ProviderURL(url_id));
 
     CREATE TABLE Address (idx_provider INTEGER NOT NULL,
                           address      TEXT,
@@ -76,8 +90,6 @@ def init_db():
                           state        TEXT,
                           zip          TEXT,
                           phone        TEXT,
-                          UNIQUE (idx_provider, address, zip)
-                              ON CONFLICT IGNORE,
                           FOREIGN KEY(idx_provider)
                               REFERENCES Provider(idx_provider));
 
@@ -95,20 +107,14 @@ def init_db():
                                UNIQUE(facility_type) ON CONFLICT FAIL);
 
     CREATE TABLE Provider_Language (idx_provider INTEGER NOT NULL,
-                                    idx_language INTEGER NOT NULL,
-                                    UNIQUE(idx_provider,idx_language)
-                                        ON CONFLICT IGNORE);
+                                    idx_language INTEGER NOT NULL);
 
     CREATE TABLE Provider_Specialty (idx_provider  INTEGER NOT NULL,
-                                     idx_specialty INTEGER NOT NULL,
-                                     UNIQUE(idx_provider,idx_specialty)
-                                         ON CONFLICT IGNORE);
+                                     idx_specialty INTEGER NOT NULL);
 
 
     CREATE TABLE Provider_FacilityType (idx_provider      INTEGER NOT NULL,
-                                        idx_facility_type INTEGER NOT NULL,
-                                        UNIQUE(idx_provider, idx_facility_type)
-                                            ON CONFLICT IGNORE);
+                                        idx_facility_type INTEGER NOT NULL);
 
     CREATE TABLE Provider_Plan (idx_provider INTEGER NOT NULL,
                                 idx_plan     INTEGER NOT NULL,
@@ -117,7 +123,9 @@ def init_db():
     CREATE TABLE Drug (idx_drug  INTEGER PRIMARY KEY AUTOINCREMENT,
                        rxnorm_id INTEGER NOT NULL,
                        drug_name TEXT    NOT NULL,
-                       UNIQUE(rxnorm_id) ON CONFLICT FAIL);
+                       source_url_id      INTEGER,
+                       FOREIGN KEY(source_url_id)
+                           REFERENCES DrugURL(url_id));
 
     CREATE TABLE Drug_Plan (idx_drug            INTEGER NOT NULL,
                             idx_plan            INTEGER NOT NULL,
@@ -149,31 +157,42 @@ def insert_issuer(conn, issuer):
 
 
 def insert_data_url(conn, url):
-    type_ = models.URLType.get_name(url.url_type)
-    query = ("INSERT INTO {}URL "
-             "(url, download_status, idx_issuer_group) "
-             "VALUES (?, ?, ?);").format(type_)
-    vals = (url.url, url.status, url.idx_issuer_group)
-    conn.execute(query, vals)
+    if url.url_type != models.URLType.void:
+        type_ = models.URLType.get_name(url.url_type)
+        try:
+            query = ("INSERT INTO {}URL "
+                     "(url, download_status, idx_issuer_group) "
+                     "VALUES (?, ?, ?);").format(type_)
+            vals = (url.url, url.status, url.idx_issuer_group)
+            conn.execute(query, vals)
+            return get_last_idx(conn)
+        except sqlite3.IntegrityError:
+            query = ("UPDATE {}URL "
+                     "SET download_status=? "
+                     "WHERE url_id=?;").format(type_)
+            vals = (url.status, url.url_id)
+            conn.execute(query, vals)
+            return url.url_id
 
 
 def insert_plan(conn, plan):
     args = (plan.id_plan, plan.id_issuer, plan.plan_id_type,
-            plan.marketing_name, plan.summary_url)
+            plan.marketing_name, plan.summary_url, plan.source_url.url_id)
     conn.execute(("INSERT INTO Plan"
                   "(id_plan, id_issuer, plan_id_type, "
-                  "marketing_name, summary_url) "
-                  "VALUES (?,?,?,?,?)"), args)
+                  "marketing_name, summary_url, source_url_id) "
+                  "VALUES (?,?,?,?,?,?)"), args)
     return get_last_idx(conn)
 
 
 def insert_provider(conn, provider):
     args = (provider.npi, provider.name,
             provider.last_updated_on.toordinal(),
-            int(provider.type_), int(provider.accepting))
+            int(provider.type_), int(provider.accepting),
+            provider.source_url.url_id)
     conn.execute(("INSERT INTO Provider "
-                  "(npi,name,last_updated_on,type,accepting) "
-                  "VALUES (?,?,?,?,?);"), args)
+                  "(npi,name,last_updated_on,type,accepting, source_url_id) "
+                  "VALUES (?,?,?,?,?,?);"), args)
     return get_last_idx(conn)
 
 
@@ -231,10 +250,10 @@ def insert_provider_specialty(conn, idx_provider, idx_specialty):
 
 
 def insert_drug(conn, drug):
-    args = (drug.rxnorm_id, drug.name)
+    args = (drug.rxnorm_id, drug.name, drug.source_url.url_id)
     conn.execute(("INSERT INTO Drug "
-                  "(rxnorm_id,drug_name) "
-                  "VALUES (?,?);"), args)
+                  "(rxnorm_id,drug_name,source_url_id) "
+                  "VALUES (?,?,?);"), args)
     return get_last_idx(conn)
 
 

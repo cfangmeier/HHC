@@ -63,7 +63,7 @@ class Downloader:
         n = len(plan_urls)
         for i, url in enumerate(plan_urls):
             log.info("Downloading from Plan URL {}/{}".format(i+1, n))
-            success = self._download_objects(url.url, models.Plan, 0)
+            success = self._download_objects(url, models.Plan, 0)
             url.status = "finished" if success else "failed"
             self.q.put(url)
 
@@ -75,9 +75,9 @@ class Downloader:
         for i, url in enumerate(data_urls):
             log.info("Downloading from Data URL {}/{}".format(i+1, n))
             if url.url_type == models.URLType.drug:
-                success = self._download_objects(url.url, models.Drug)
+                success = self._download_objects(url, models.Drug)
             else:  # provider url
-                success = self._download_objects(url.url, models.Provider)
+                success = self._download_objects(url, models.Provider)
             url.status = "finished" if success else "failed"
             self.q.put(url)
 
@@ -91,13 +91,19 @@ class Downloader:
         try:
             with request.urlopen(iss_grp.index_url, timeout=20) as conn:
                 js = json.loads(conn.read().decode('utf8'))
-                plans = [models.IssuerGroupURL(idx, url, models.URLType.plan)
+                plans = [models.IssuerGroupURL(idx, url, models.URLType.plan,
+                                               status="pending")
                          for url in js['plan_urls']]
-                provs = [models.IssuerGroupURL(idx, url, models.URLType.prov)
+                provs = [models.IssuerGroupURL(idx, url, models.URLType.prov,
+                                               status="pending")
                          for url in js['provider_urls']]
-                drugs = [models.IssuerGroupURL(idx, url, models.URLType.drug)
+                drugs = [models.IssuerGroupURL(idx, url, models.URLType.drug,
+                                               status="pending")
                          for url in js['formulary_urls']]
                 iss_grp.data_urls = (plans+provs+drugs)
+
+                for url in iss_grp.data_urls:
+                    self.q.put(url)
 
                 fmt = "Finished pulling JSON index from URL \"{}\""
                 log.info(fmt.format(iss_grp.index_url))
@@ -119,10 +125,10 @@ class Downloader:
             log.info("Downloaded {}".format(s))
             log.info("Parsed {} data objects".format(i))
         try:
-            json_objs = json_list_parser(url)
+            json_objs = json_list_parser(url.url)
             for i, ((bytes_read, file_size), obj_dict) in enumerate(json_objs):
                 try:
-                    obj = class_(obj_dict)
+                    obj = class_(obj_dict, source_url=url)
                     self.q.put(obj)
                 except Exception as e:
                     log.exception(e)
@@ -135,7 +141,7 @@ class Downloader:
                     status(bytes_read, file_size, i)
                     break
             fmt = "Finished download of url: {} |{} MB"
-            log.info(fmt.format(url, bytes_read/2**20))
+            log.info(fmt.format(url.url, bytes_read/2**20))
             return True
         except Exception as e:
             log.exception(e)
@@ -165,13 +171,19 @@ class Consumer:
         self.states = states
 
         # Declare a few auxillary lookup tables
-        self.provs = {}  # maps npi to idx_provider
-        self.drugs = {}  # maps rx_norm_id to idx_drug
         self.facility_types = {}  # maps name(str) to idx
         self.specialties = {}  # maps name(str) to idx
         self.languages = {}  # maps name(str) to idx
+        self.urls = {}  # maps url(str) to url_id
         self.plans = {}  # maps (id_issuer,id_plan) to idx_plan
         self.commit_obj_cnt = 0
+
+    def _set_url(self, obj):
+        if obj.source_url:
+            obj.source_url.url_id = self.urls[obj.source_url.url]
+        else:
+            obj.source_url = models.IssuerGroupURL(None, "N/A",
+                                                   models.URLType.void, "")
 
     def _process_issuer_group(self, issuer_group):
         id_ = issuer_group.idx_issuer_group
@@ -179,8 +191,12 @@ class Consumer:
         db.insert_issuer_group(self.conn, issuer_group)
 
     def _process_url(self, url):
-        self.logger.debug("Inserting URL: {}".format(url))
-        db.insert_data_url(self.conn, url)
+        if url.url in self.urls:
+            url.url_id = self.urls[url.url]
+            self.logger.dubug("Updating URL: {}".format(url))
+        else:
+            self.logger.dubug("Inserting URL: {}".format(url))
+        self.urls[url.url] = db.insert_data_url(self.conn, url)
 
     def _process_issuer(self, issuer):
         self.logger.debug("Inserting Issuer: {}".format(issuer.id_issuer))
@@ -188,6 +204,7 @@ class Consumer:
 
     def _process_plan(self, plan):
         self.logger.debug("Inserting Plan: {}".format(plan.marketing_name))
+        self._set_url(plan)
         if (plan.id_issuer, plan.id_plan) not in self.plans:
             idx_plan = db.insert_plan(self.conn, plan)
             self.plans[(plan.id_issuer, plan.id_plan)] = idx_plan
@@ -204,35 +221,32 @@ class Consumer:
         conn = self.conn
         log = self.logger
         log.debug("Inserting Provider: {},{}".format(prov.npi, prov.name))
-        if not prov.npi:
-            return
         if not self._check_provider_in_state(prov):
+            # drop provider if it has no addresses in specified states
             return
-        if prov.npi not in self.provs:
-            self.provs[prov.npi] = db.insert_provider(conn, prov)
-            idx_prov = self.provs[prov.npi]
+        self._set_url(prov)
+        idx_prov = db.insert_provider(conn, prov)
 
-            for lang in prov.languages:
-                if lang not in self.languages:
-                    self.languages[lang] = db.insert_language(conn, lang)
-                idx_lang = self.languages[lang]
-                db.insert_provider_language(conn, idx_prov, idx_lang)
+        for lang in prov.languages:
+            if lang not in self.languages:
+                self.languages[lang] = db.insert_language(conn, lang)
+            idx_lang = self.languages[lang]
+            db.insert_provider_language(conn, idx_prov, idx_lang)
 
-            for spec in prov.specialties:
-                if spec not in self.specialties:
-                    self.specialties[spec] = db.insert_specialty(conn, spec)
-                idx_spec = self.specialties[spec]
-                db.insert_provider_specialty(conn, idx_prov, idx_spec)
+        for spec in prov.specialties:
+            if spec not in self.specialties:
+                self.specialties[spec] = db.insert_specialty(conn, spec)
+            idx_spec = self.specialties[spec]
+            db.insert_provider_specialty(conn, idx_prov, idx_spec)
 
-            for ft in prov.facility_types:
-                if ft not in self.facility_types:
-                    self.facility_types[ft] = db.insert_facility_type(conn, ft)
-                idx_facil = self.facility_types[ft]
-                db.insert_provider_facility_type(conn, idx_prov, idx_facil)
+        for ft in prov.facility_types:
+            if ft not in self.facility_types:
+                self.facility_types[ft] = db.insert_facility_type(conn, ft)
+            idx_facil = self.facility_types[ft]
+            db.insert_provider_facility_type(conn, idx_prov, idx_facil)
 
-            for address in prov.addresses:
-                db.insert_address(conn, address, idx_prov)
-        idx_prov = self.provs[prov.npi]
+        for address in prov.addresses:
+            db.insert_address(conn, address, idx_prov)
 
         for plan in prov.plans:
             if (plan.id_issuer, plan.id_plan) not in self.plans:
@@ -250,40 +264,29 @@ class Consumer:
         log.debug("Inserting Drug: {}".format(drug.name))
         if not drug.rxnorm_id:
             return
-        if drug.rxnorm_id not in self.drugs:
-            self.drugs[drug.rxnorm_id] = db.insert_drug(conn, drug)
-        idx_drug = self.drugs[drug.rxnorm_id]
+        self._set_url(drug)
+        idx_drug = db.insert_drug(conn, drug)
         for plan in drug.plans:
             db.insert_drug_plan(conn, plan, idx_drug)
 
-    def _add_indices(self):
-        self.logger.info("Creating indices...")
-        query = ("CREATE INDEX idx_Provider_Plan ON Provider_Plan "
-                 "(idx_provider, idx_plan);")
-        self.conn.execute(query)
-        query = "CREATE INDEX idx_Address_zip ON Address (zip);"
-        self.conn.execute(query)
-        self.logger.info("Finished")
-
     def run(self):
         log = self.logger
-        map_ = {models.IssuerGroup:      self._process_issuer_group,
-                models.IssuerGroupURL:   self._process_url,
-                models.Issuer:           self._process_issuer,
-                models.Provider:         self._process_provider,
-                models.Plan:             self._process_plan,
-                models.Drug:             self._process_drug}
+        process = {models.IssuerGroup:      self._process_issuer_group,
+                   models.IssuerGroupURL:   self._process_url,
+                   models.Issuer:           self._process_issuer,
+                   models.Provider:         self._process_provider,
+                   models.Plan:             self._process_plan,
+                   models.Drug:             self._process_drug}
         while True:
             obj = self.q.get()
             if obj == "QUIT":
-                self._add_indices()
-                log.info("Consumer received quit signal. closing db...")
+                log.info("Finished downloading data.")
                 self.conn.commit()
                 self.conn.close()
                 break
             else:
                 try:
-                    map_[type(obj)](obj)
+                    process[type(obj)](obj)
                     self.commit_obj_cnt += 1
                     if self.commit_obj_cnt >= self.commit_size:
                         fmt = ("Successfully downloaded {} objects, "
@@ -403,8 +406,8 @@ class Manager:
         self._find_issuer_groups()
         self._apply_filters()
         q = mp.Queue(maxsize=1000)
-        consume_proc = mp.Process(target=consume, args=(q,
-                                                        self.requested_states))
+        proc_args = (q, self.requested_states)
+        consume_proc = mp.Process(target=consume, args=proc_args)
         consume_proc.start()
         pool = mp.Pool(self.num_processes, init_produce, [q])
         pool.map(produce, [(grp, i)
@@ -432,7 +435,7 @@ def main():
     args = parser.parse_args()
 
     filters = {'issuer_ids': args.issuerids,
-               'states': args.states}
+               'states': [state.lower() for state in args.states]}
     manager = Manager(args.cmsurl, filters, args.processes)
     manager.run()
 
