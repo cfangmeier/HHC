@@ -137,6 +137,29 @@ def init_db():
     return conn
 
 
+def create_indices(conn):
+    """
+    Create a series of indices that will make the "clean-up"
+    Stage run much *much* faster.
+    """
+    conn.execute(("CREATE INDEX Provider_Plan_idx_provider "
+                  "ON Provider_Plan (idx_provider)"))
+    conn.execute(("CREATE INDEX Drug_Plan_idx_drug "
+                  "ON Drug_Plan (idx_drug)"))
+    conn.execute(("CREATE INDEX Drug_rxnorm_id "
+                  "ON Drug (rxnorm_id)"))
+    conn.execute(("CREATE INDEX Provider_npi "
+                  "ON Provider (npi)"))
+    conn.execute(("CREATE INDEX Address_idx_provider "
+                  "ON Address (idx_provider)"))
+    conn.execute(("CREATE INDEX Provider_Language_idx_provider "
+                  "ON Provider_Language (idx_provider)"))
+    conn.execute(("CREATE INDEX Provider_Specialty_idx_provider "
+                  "ON Provider_Specialty (idx_provider)"))
+    conn.execute(("CREATE INDEX Provider_FacilityType_idx_provider "
+                  "ON Provider_FacilityType (idx_provider)"))
+
+
 def insert_issuer_group(conn, issuer_group):
     vals = (issuer_group.idx_issuer_group,
             issuer_group.index_url,

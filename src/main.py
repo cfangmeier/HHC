@@ -86,7 +86,7 @@ class Downloader:
         iss_grp = self.issuer_group
         idx = iss_grp.idx_issuer_group
         if iss_grp.index_url == NULL_URL:
-            return
+            return False
         log.info("Pulling JSON index from \"{}\"".format(iss_grp.index_url))
         try:
             with request.urlopen(iss_grp.index_url, timeout=20) as conn:
@@ -193,9 +193,9 @@ class Consumer:
     def _process_url(self, url):
         if url.url in self.urls:
             url.url_id = self.urls[url.url]
-            self.logger.dubug("Updating URL: {}".format(url))
+            self.logger.debug("Updating URL: {}".format(url))
         else:
-            self.logger.dubug("Inserting URL: {}".format(url))
+            self.logger.debug("Inserting URL: {}".format(url))
         self.urls[url.url] = db.insert_data_url(self.conn, url)
 
     def _process_issuer(self, issuer):
@@ -280,8 +280,10 @@ class Consumer:
         while True:
             obj = self.q.get()
             if obj == "QUIT":
-                log.info("Finished downloading data.")
+                log.info("Finished downloading data. Creating indices...")
+                db.create_indices(self.conn)
                 self.conn.commit()
+                log.info("Finished creating indices.")
                 self.conn.close()
                 break
             else:
@@ -428,7 +430,7 @@ def main():
     add('--cmsurl', default=urldefault, help=urlhelp)
     add('--issuerids', default=None, nargs='+', type=int,
         help="Specify specific issuers to do fulldata pull on")
-    add('--states', default=None, nargs='+', type=str,
+    add('--states', default=[], nargs='+', type=str,
         help="Specify a list of specific states to download fulldata on")
     add('--processes', default=1, type=int,
         help="Set the number of processes to use in the full data pull")
