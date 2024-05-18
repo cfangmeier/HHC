@@ -29,13 +29,15 @@ class ProviderType(IntEnum):
     no_type = -1
     facility = 1
     individual = 2
+    group = 3
 
     @classmethod
     def lookup(cls, provider_str):
         if provider_str is None:
             return cls.no_data
         map_ = {'facility': cls.facility,
-                'individual': cls.individual}
+                'individual': cls.individual,
+                'group': cls.group}
         return map_.get(provider_str.lower(), cls.no_type)
 
 
@@ -147,6 +149,8 @@ class Provider:
                                       name_dict.get('last', 'N/A')])
             elif self.type_ == ProviderType.facility:
                 self.name = prov_dict.get('facility_name', "N/A")
+            elif self.type_ == ProviderType.group:
+                self.name = prov_dict.get('group_name', "N/A")
             else:
                 self.name = None
             try:

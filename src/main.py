@@ -385,8 +385,8 @@ class Manager:
             i = models.Issuer()
             i.state = ws.cell(row=current_row, column=1).value.lower()
             i.id_issuer = ws.cell(row=current_row, column=2).value
-            i.name = ws.cell(row=current_row, column=3).value
-            index_url = ws.cell(row=current_row, column=4).value
+            i.name = str(ws.cell(row=current_row, column=2).value)  # 
+            index_url = ws.cell(row=current_row, column=3).value
             if index_url == NULL_URL:
                 fmt = "Missing JSON url for Issuer: {}, {}"
                 log.warning(fmt.format(i.name, i.id_issuer))
@@ -425,8 +425,7 @@ def main():
     urlhelp = ("the url to \"machine-readable-url-puf.zip\", or the path "
                "to \"Machine_Readable_PUF_*.xlsx\" in the form "
                "\"file:/path/to/file\"")
-    urldefault = ("http://download.cms.gov/marketplace-puf/2016/"
-                  "machine-readable-url-puf.zip")
+    urldefault = ("http://download.cms.gov/marketplace-puf/2016/machine-readable-url-puf.zip")
     add('--cmsurl', default=urldefault, help=urlhelp)
     add('--issuerids', default=None, nargs='+', type=int,
         help="Specify specific issuers to do fulldata pull on")

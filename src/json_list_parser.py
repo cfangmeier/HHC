@@ -94,6 +94,8 @@ def json_list_parser(url,
 
     # Seek to the opening bracket of the data list
     buf = read(chunk_size)
+    if buf == "[]" or buf == "":
+        return
     i = buf.find('[')
     buf = buf[i+1:].lstrip()
     while True:
@@ -118,7 +120,8 @@ def json_list_parser(url,
                         # End of list, check for start of another list
                         i = buf.find('[')
                         if i == -1:
-                            raise StopIteration()
+                            # raise StopIteration()
+                            return
                         buf = buf[i+1:].lstrip()
                     else:
                         raise ValueError("Badly formatted JSON List file")
